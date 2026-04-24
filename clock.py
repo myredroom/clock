@@ -1335,7 +1335,7 @@ class ClockManager:
         screen      = Gdk.Screen.get_default()
         primary_idx = screen.get_primary_monitor()
 
-        # Per-monitor: visibility + snap
+        # Per-monitor: visibility + snap + options (when click-through active)
         for win in self.windows:
             label = f'Monitor {win.monitor_idx + 1}'
             if win.monitor_idx == primary_idx:
@@ -1357,6 +1357,78 @@ class ClockManager:
                 snap_sub.append(si)
             snap_item.set_submenu(snap_sub)
             sub.append(snap_item)
+
+            if self.click_through:
+                sub.append(Gtk.SeparatorMenuItem())
+
+                mode_item = Gtk.MenuItem(label='Display')
+                mode_sub  = Gtk.Menu()
+                for name in MODES:
+                    mi = Gtk.CheckMenuItem(label=name)
+                    mi.set_active(name == win.mode)
+                    mi.connect('activate', win._set_mode, name)
+                    mode_sub.append(mi)
+                mode_item.set_submenu(mode_sub); sub.append(mode_item)
+
+                s_item = Gtk.CheckMenuItem(label='Show seconds')
+                s_item.set_active(win.show_seconds)
+                s_item.connect('activate', win._toggle_seconds)
+                sub.append(s_item)
+
+                d_item = Gtk.CheckMenuItem(label='Show date')
+                d_item.set_active(win.show_date)
+                d_item.connect('activate', win._toggle_date)
+                sub.append(d_item)
+
+                if win.mode in ('Analog', 'Both'):
+                    mk_item = Gtk.MenuItem(label='Hour markers')
+                    mk_sub  = Gtk.Menu()
+                    for name in MARKER_STYLES:
+                        mi = Gtk.CheckMenuItem(label=name)
+                        mi.set_active(name == win.marker_style)
+                        mi.connect('activate', win._set_marker_style, name)
+                        mk_sub.append(mi)
+                    mk_item.set_submenu(mk_sub); sub.append(mk_item)
+
+                    hnd_item = Gtk.MenuItem(label='Hand style')
+                    hnd_sub  = Gtk.Menu()
+                    for name in HAND_STYLES:
+                        mi = Gtk.CheckMenuItem(label=name)
+                        mi.set_active(name == win.hand_style)
+                        mi.connect('activate', win._set_hand_style, name)
+                        hnd_sub.append(mi)
+                    hnd_item.set_submenu(hnd_sub); sub.append(hnd_item)
+
+                sz_item = Gtk.MenuItem(label='Size')
+                sz_sub  = Gtk.Menu()
+                for name, px in SIZES.items():
+                    mi = Gtk.CheckMenuItem(label=f'{name}  ({px}px)')
+                    mi.set_active(px == win.size)
+                    mi.connect('activate', win._set_size, px)
+                    sz_sub.append(mi)
+                sz_item.set_submenu(sz_sub); sub.append(sz_item)
+
+                th_item = Gtk.MenuItem(label='Theme')
+                th_sub  = Gtk.Menu()
+                for name, t in THEMES.items():
+                    mi = Gtk.CheckMenuItem(label=name)
+                    mi.set_active(t is win.theme)
+                    mi.connect('activate', win._set_theme, t)
+                    th_sub.append(mi)
+                th_item.set_submenu(th_sub); sub.append(th_item)
+
+                if win.theme is not THEMES['Clear']:
+                    op_item = Gtk.MenuItem(label='Opacity')
+                    op_sub  = Gtk.Menu()
+                    for lbl, val in [('100%',1.0),('90%',0.9),('80%',0.8),('70%',0.7),
+                                      ('60%',0.6),('50%',0.5),('40%',0.4),('30%',0.3),
+                                      ('20%',0.2),('10%',0.1)]:
+                        mi = Gtk.CheckMenuItem(label=lbl)
+                        mi.set_active(abs(val - win.opacity_level) < 0.05)
+                        mi.connect('activate', win._set_opacity, val)
+                        op_sub.append(mi)
+                    op_item.set_submenu(op_sub); sub.append(op_item)
+
             mon_item.set_submenu(sub)
             menu.append(mon_item)
 
@@ -1373,84 +1445,6 @@ class ClockManager:
         ct_item.set_active(self.click_through)
         ct_item.connect('activate', lambda i: self.set_click_through(i.get_active()))
         menu.append(ct_item)
-
-        # Options submenu — only when click-through is active
-        if self.click_through and self.windows:
-            win = self.windows[0]
-
-            opts_item = Gtk.MenuItem(label='Options')
-            opts_sub  = Gtk.Menu()
-
-            mode_item = Gtk.MenuItem(label='Display')
-            mode_sub  = Gtk.Menu()
-            for name in MODES:
-                mi = Gtk.CheckMenuItem(label=name)
-                mi.set_active(name == win.mode)
-                mi.connect('activate', win._set_mode, name)
-                mode_sub.append(mi)
-            mode_item.set_submenu(mode_sub); opts_sub.append(mode_item)
-
-            s_item = Gtk.CheckMenuItem(label='Show seconds')
-            s_item.set_active(win.show_seconds)
-            s_item.connect('activate', win._toggle_seconds)
-            opts_sub.append(s_item)
-
-            d_item = Gtk.CheckMenuItem(label='Show date')
-            d_item.set_active(win.show_date)
-            d_item.connect('activate', win._toggle_date)
-            opts_sub.append(d_item)
-
-            if win.mode in ('Analog', 'Both'):
-                mk_item = Gtk.MenuItem(label='Hour markers')
-                mk_sub  = Gtk.Menu()
-                for name in MARKER_STYLES:
-                    mi = Gtk.CheckMenuItem(label=name)
-                    mi.set_active(name == win.marker_style)
-                    mi.connect('activate', win._set_marker_style, name)
-                    mk_sub.append(mi)
-                mk_item.set_submenu(mk_sub); opts_sub.append(mk_item)
-
-                hnd_item = Gtk.MenuItem(label='Hand style')
-                hnd_sub  = Gtk.Menu()
-                for name in HAND_STYLES:
-                    mi = Gtk.CheckMenuItem(label=name)
-                    mi.set_active(name == win.hand_style)
-                    mi.connect('activate', win._set_hand_style, name)
-                    hnd_sub.append(mi)
-                hnd_item.set_submenu(hnd_sub); opts_sub.append(hnd_item)
-
-            sz_item = Gtk.MenuItem(label='Size')
-            sz_sub  = Gtk.Menu()
-            for name, px in SIZES.items():
-                mi = Gtk.CheckMenuItem(label=f'{name}  ({px}px)')
-                mi.set_active(px == win.size)
-                mi.connect('activate', win._set_size, px)
-                sz_sub.append(mi)
-            sz_item.set_submenu(sz_sub); opts_sub.append(sz_item)
-
-            th_item = Gtk.MenuItem(label='Theme')
-            th_sub  = Gtk.Menu()
-            for name, t in THEMES.items():
-                mi = Gtk.CheckMenuItem(label=name)
-                mi.set_active(t is win.theme)
-                mi.connect('activate', win._set_theme, t)
-                th_sub.append(mi)
-            th_item.set_submenu(th_sub); opts_sub.append(th_item)
-
-            if win.theme is not THEMES['Clear']:
-                op_item = Gtk.MenuItem(label='Opacity')
-                op_sub  = Gtk.Menu()
-                for lbl, val in [('100%',1.0),('90%',0.9),('80%',0.8),('70%',0.7),
-                                  ('60%',0.6),('50%',0.5),('40%',0.4),('30%',0.3),
-                                  ('20%',0.2),('10%',0.1)]:
-                    mi = Gtk.CheckMenuItem(label=lbl)
-                    mi.set_active(abs(val - win.opacity_level) < 0.05)
-                    mi.connect('activate', win._set_opacity, val)
-                    op_sub.append(mi)
-                op_item.set_submenu(op_sub); opts_sub.append(op_item)
-
-            opts_item.set_submenu(opts_sub)
-            menu.append(opts_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
