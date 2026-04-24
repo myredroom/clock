@@ -1,0 +1,15 @@
+[
+  {
+    "id": "74897fa8-df36-42ea-815e-a6d3898f184c",
+    "label": "Alarm",
+    "time": "10:50",
+    "repeat": "Once",
+    "style": "both",
+    "tone": 5,
+    "dismiss": "persist",
+    "expire_mins": 5,
+    "wake": true,
+    "enabled": false,
+    "last_fired": "2026-04-21 10:50"
+  }
+]
