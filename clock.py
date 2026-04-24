@@ -1173,6 +1173,13 @@ class ClockWindow(Gtk.Window):
             cr.move_to(tl_x, tl_y); cr.line_to(tip_x, tip_y); cr.stroke()
         cr.restore()
 
+    def apply_click_through(self, enabled):
+        if enabled:
+            self.input_shape_combine_region(cairo.Region())
+        else:
+            full = cairo.Region(cairo.RectangleInt(0, 0, self.size, self.size))
+            self.input_shape_combine_region(full)
+
     def _rounded_rect(self, cr, x, y, w, h, radius):
         cr.new_sub_path()
         cr.arc(x + w - radius, y + radius,     radius, -math.pi/2, 0)
@@ -1186,9 +1193,10 @@ class ClockWindow(Gtk.Window):
 
 class ClockManager:
     def __init__(self):
-        shared     = load_state()
-        self.sync  = bool(shared.get('sync_settings', True))
-        self.windows = []
+        shared             = load_state()
+        self.sync          = bool(shared.get('sync_settings', True))
+        self.click_through = bool(shared.get('click_through', False))
+        self.windows       = []
         self._active_alert = None
 
         screen = Gdk.Screen.get_default()
@@ -1197,6 +1205,10 @@ class ClockManager:
             state = self._load_window_state(i, geom, shared)
             win   = ClockWindow(self, i, geom, state)
             self.windows.append(win)
+
+        if self.click_through:
+            for w in self.windows:
+                w.apply_click_through(True)
 
         self._build_tray()
         GLib.timeout_add(1000, self._tick)
@@ -1246,11 +1258,67 @@ class ClockManager:
 
     def _build_tray(self):
         self.tray = Gtk.StatusIcon()
-        self.tray.set_from_icon_name('clock')
-        self.tray.set_tooltip_text('Clock')
+        self.tray.set_from_pixbuf(self._make_tray_pixbuf())
+        self._update_tray_tooltip()
         self.tray.set_visible(True)
         self.tray.connect('activate',   self._tray_click)
         self.tray.connect('popup-menu', self._tray_menu)
+
+    def _update_tray_tooltip(self):
+        self.tray.set_tooltip_text(
+            'Clock  [click-through active]' if self.click_through else 'Clock')
+
+    def _make_tray_pixbuf(self):
+        sz  = 24
+        sur = cairo.ImageSurface(cairo.FORMAT_ARGB32, sz, sz)
+        ctx = cairo.Context(sur)
+        cx  = cy = sz / 2.0
+        r   = sz / 2.0 - 1.5
+        al  = 0.50 if self.click_through else 1.0
+
+        # Face
+        ctx.arc(cx, cy, r, 0, 2 * math.pi)
+        ctx.set_source_rgba(0.12, 0.15, 0.22, al); ctx.fill()
+        ctx.arc(cx, cy, r, 0, 2 * math.pi)
+        ctx.set_source_rgba(0.65, 0.75, 0.90, al)
+        ctx.set_line_width(1.2); ctx.stroke()
+
+        # Hands (10:10 — classic advertising position)
+        ctx.set_source_rgba(1, 1, 1, al)
+        ctx.set_line_cap(cairo.LINE_CAP_ROUND)
+        for ang, frac, lw in [
+            ((10 / 6.0) * math.pi, 0.50, 1.8),   # hour  ~10
+            (( 2 / 6.0) * math.pi, 0.70, 1.4),   # minute ~2
+        ]:
+            ctx.set_line_width(lw)
+            ctx.move_to(cx, cy)
+            ctx.line_to(cx + r * frac * math.sin(ang), cy - r * frac * math.cos(ang))
+            ctx.stroke()
+
+        # Centre stud
+        ctx.arc(cx, cy, 1.5, 0, 2 * math.pi)
+        ctx.set_source_rgba(0.95, 0.65, 0.20, al); ctx.fill()
+
+        # Click-through indicator: orange badge top-right
+        if self.click_through:
+            br = 4.5; bx = sz - br - 0.5; by = br + 0.5
+            ctx.arc(bx, by, br, 0, 2 * math.pi)
+            ctx.set_source_rgba(1.0, 0.50, 0.08, 1.0); ctx.fill()
+            ctx.arc(bx, by, br, 0, 2 * math.pi)
+            ctx.set_source_rgba(1.0, 0.80, 0.40, 0.70)
+            ctx.set_line_width(0.8); ctx.stroke()
+
+        return Gdk.pixbuf_get_from_surface(sur, 0, 0, sz, sz)
+
+    def set_click_through(self, enabled):
+        self.click_through = enabled
+        for w in self.windows:
+            w.apply_click_through(enabled)
+        shared = load_state()
+        shared['click_through'] = enabled
+        save_state(shared)
+        self.tray.set_from_pixbuf(self._make_tray_pixbuf())
+        self._update_tray_tooltip()
 
     def _tray_click(self, icon):
         any_visible = any(w.get_visible() for w in self.windows)
@@ -1264,21 +1332,31 @@ class ClockManager:
 
     def _tray_menu(self, icon, button, time):
         menu = Gtk.Menu()
-
         screen      = Gdk.Screen.get_default()
         primary_idx = screen.get_primary_monitor()
 
+        # Per-monitor: visibility + snap
         for win in self.windows:
             label = f'Monitor {win.monitor_idx + 1}'
             if win.monitor_idx == primary_idx:
                 label += ' (Primary)'
             mon_item = Gtk.MenuItem(label=label)
             sub = Gtk.Menu()
-            for ml, mv in [('Normal','normal'),('Hidden','hidden')]:
+            for ml, mv in [('Normal', 'normal'), ('Hidden', 'hidden')]:
                 mi = Gtk.CheckMenuItem(label=ml)
                 mi.set_active(win.window_mode == mv)
                 mi.connect('activate', self._set_win_mode, win, mv)
                 sub.append(mi)
+            sub.append(Gtk.SeparatorMenuItem())
+            snap_item = Gtk.MenuItem(label='Snap to corner')
+            snap_sub  = Gtk.Menu()
+            for sl, sv in [('Top right','tr'),('Top left','tl'),
+                            ('Bottom right','br'),('Bottom left','bl')]:
+                si = Gtk.MenuItem(label=sl)
+                si.connect('activate', lambda _, w=win, p=sv: w._snap(None, p))
+                snap_sub.append(si)
+            snap_item.set_submenu(snap_sub)
+            sub.append(snap_item)
             mon_item.set_submenu(sub)
             menu.append(mon_item)
 
@@ -1287,6 +1365,92 @@ class ClockManager:
         alarms_item = Gtk.MenuItem(label='Alarms…')
         alarms_item.connect('activate', lambda _: AlarmManagerWindow(self.windows[0]))
         menu.append(alarms_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        # Click-through toggle
+        ct_item = Gtk.CheckMenuItem(label='Click-through')
+        ct_item.set_active(self.click_through)
+        ct_item.connect('activate', lambda i: self.set_click_through(i.get_active()))
+        menu.append(ct_item)
+
+        # Options submenu — only when click-through is active
+        if self.click_through and self.windows:
+            win = self.windows[0]
+
+            opts_item = Gtk.MenuItem(label='Options')
+            opts_sub  = Gtk.Menu()
+
+            mode_item = Gtk.MenuItem(label='Display')
+            mode_sub  = Gtk.Menu()
+            for name in MODES:
+                mi = Gtk.CheckMenuItem(label=name)
+                mi.set_active(name == win.mode)
+                mi.connect('activate', win._set_mode, name)
+                mode_sub.append(mi)
+            mode_item.set_submenu(mode_sub); opts_sub.append(mode_item)
+
+            s_item = Gtk.CheckMenuItem(label='Show seconds')
+            s_item.set_active(win.show_seconds)
+            s_item.connect('activate', win._toggle_seconds)
+            opts_sub.append(s_item)
+
+            d_item = Gtk.CheckMenuItem(label='Show date')
+            d_item.set_active(win.show_date)
+            d_item.connect('activate', win._toggle_date)
+            opts_sub.append(d_item)
+
+            if win.mode in ('Analog', 'Both'):
+                mk_item = Gtk.MenuItem(label='Hour markers')
+                mk_sub  = Gtk.Menu()
+                for name in MARKER_STYLES:
+                    mi = Gtk.CheckMenuItem(label=name)
+                    mi.set_active(name == win.marker_style)
+                    mi.connect('activate', win._set_marker_style, name)
+                    mk_sub.append(mi)
+                mk_item.set_submenu(mk_sub); opts_sub.append(mk_item)
+
+                hnd_item = Gtk.MenuItem(label='Hand style')
+                hnd_sub  = Gtk.Menu()
+                for name in HAND_STYLES:
+                    mi = Gtk.CheckMenuItem(label=name)
+                    mi.set_active(name == win.hand_style)
+                    mi.connect('activate', win._set_hand_style, name)
+                    hnd_sub.append(mi)
+                hnd_item.set_submenu(hnd_sub); opts_sub.append(hnd_item)
+
+            sz_item = Gtk.MenuItem(label='Size')
+            sz_sub  = Gtk.Menu()
+            for name, px in SIZES.items():
+                mi = Gtk.CheckMenuItem(label=f'{name}  ({px}px)')
+                mi.set_active(px == win.size)
+                mi.connect('activate', win._set_size, px)
+                sz_sub.append(mi)
+            sz_item.set_submenu(sz_sub); opts_sub.append(sz_item)
+
+            th_item = Gtk.MenuItem(label='Theme')
+            th_sub  = Gtk.Menu()
+            for name, t in THEMES.items():
+                mi = Gtk.CheckMenuItem(label=name)
+                mi.set_active(t is win.theme)
+                mi.connect('activate', win._set_theme, t)
+                th_sub.append(mi)
+            th_item.set_submenu(th_sub); opts_sub.append(th_item)
+
+            if win.theme is not THEMES['Clear']:
+                op_item = Gtk.MenuItem(label='Opacity')
+                op_sub  = Gtk.Menu()
+                for lbl, val in [('100%',1.0),('90%',0.9),('80%',0.8),('70%',0.7),
+                                  ('60%',0.6),('50%',0.5),('40%',0.4),('30%',0.3),
+                                  ('20%',0.2),('10%',0.1)]:
+                    mi = Gtk.CheckMenuItem(label=lbl)
+                    mi.set_active(abs(val - win.opacity_level) < 0.05)
+                    mi.connect('activate', win._set_opacity, val)
+                    op_sub.append(mi)
+                op_item.set_submenu(op_sub); opts_sub.append(op_item)
+
+            opts_item.set_submenu(opts_sub)
+            menu.append(opts_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
