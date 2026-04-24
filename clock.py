@@ -438,46 +438,65 @@ class AlarmManagerWindow(Gtk.Window):
 
 THEMES = {
     'Dark': {
-        'face':       (0.07, 0.07, 0.11, 0.90),
-        'border':     (1,    1,    1,    0.60),
-        'hour_marks': (0.95, 0.85, 0.50),
-        'min_marks':  (0.55, 0.70, 0.95),
-        'hour_hand':  (0.53, 0.81, 0.98, 0.97),
-        'min_hand':   (1,    1,    1,    0.95),
-        'hands':      (1,    1,    1,    0.95),
-        'second':     (0.96, 0.32, 0.22, 1.00),
-        'digital':    (0.60, 0.95, 0.70),
-        'marks':      (1,    1,    1),
+        'face':         (0.07, 0.07, 0.11, 0.90),
+        'border':       (1,    1,    1,    0.60),
+        'hour_marks':   (0.95, 0.85, 0.50),
+        'min_marks':    (0.55, 0.70, 0.95),
+        'hour_hand':    (0.53, 0.81, 0.98, 0.97),
+        'min_hand':     (1,    1,    1,    0.95),
+        'hands':        (1,    1,    1,    0.95),
+        'second':       (0.96, 0.32, 0.22, 1.00),
+        'digital':      (0.60, 0.95, 0.70),
+        'marks':        (1,    1,    1),
+        'date_bg':      (0.96, 0.96, 0.94, 0.97),
+        'date_fg':      (0.05, 0.05, 0.05, 1.00),
+        'date_border':  (0.78, 0.82, 0.87, 0.95),
+        'inset_bg':     (0.74, 0.77, 0.80, 0.90),
+        'inset_fg':     (0.08, 0.08, 0.10),
+        'inset_border': (0.50, 0.53, 0.57, 0.95),
     },
     'Light': {
-        'face':       (0.95, 0.95, 0.92, 0.92),
-        'border':     (0,    0,    0,    0.40),
-        'hour_marks': (0.15, 0.35, 0.65),
-        'min_marks':  (0.50, 0.50, 0.50),
-        'hour_hand':  (0.53, 0.81, 0.98, 0.97),
-        'min_hand':   (0.10, 0.10, 0.10, 0.90),
-        'hands':      (0.10, 0.10, 0.10, 0.95),
-        'second':     (0.80, 0.10, 0.10, 1.00),
-        'digital':    (0.15, 0.45, 0.25),
-        'marks':      (0,    0,    0),
+        'face':         (0.95, 0.95, 0.92, 0.92),
+        'border':       (0,    0,    0,    0.40),
+        'hour_marks':   (0.15, 0.35, 0.65),
+        'min_marks':    (0.50, 0.50, 0.50),
+        'hour_hand':    (0.53, 0.81, 0.98, 0.97),
+        'min_hand':     (0.10, 0.10, 0.10, 0.90),
+        'hands':        (0.10, 0.10, 0.10, 0.95),
+        'second':       (0.80, 0.10, 0.10, 1.00),
+        'digital':      (0.15, 0.45, 0.25),
+        'marks':        (0,    0,    0),
+        'date_bg':      (0.00, 0.00, 0.00, 0.97),
+        'date_fg':      (1.00, 1.00, 1.00, 1.00),
+        'date_border':  (0.30, 0.30, 0.30, 0.95),
+        'inset_bg':     (0.18, 0.02, 0.02, 0.88),
+        'inset_fg':     (1.00, 0.35, 0.35),
+        'inset_border': (0.78, 0.82, 0.87, 0.95),
     },
     'Clear': {
-        'face':       (0,    0,    0,    0.00),
-        'border':     (1,    1,    1,    0.60),
-        'hour_marks': (0.95, 0.85, 0.50),
-        'min_marks':  (0.55, 0.70, 0.95),
-        'hour_hand':  (0.53, 0.81, 0.98, 0.97),
-        'min_hand':   (1,    1,    1,    0.95),
-        'hands':      (1,    1,    1,    0.95),
-        'second':     (0.96, 0.32, 0.22, 1.00),
-        'digital':    (0.60, 0.95, 0.70),
-        'marks':      (1,    1,    1),
+        'face':         (0,    0,    0,    0.00),
+        'border':       (1,    1,    1,    0.60),
+        'hour_marks':   (0.95, 0.85, 0.50),
+        'min_marks':    (0.55, 0.70, 0.95),
+        'hour_hand':    (0.53, 0.81, 0.98, 0.97),
+        'min_hand':     (1,    1,    1,    0.95),
+        'hands':        (1,    1,    1,    0.95),
+        'second':       (0.96, 0.32, 0.22, 1.00),
+        'digital':      (0.60, 0.95, 0.70),
+        'marks':        (1,    1,    1),
+        'date_bg':      (0.96, 0.96, 0.94, 0.97),
+        'date_fg':      (0.05, 0.05, 0.05, 1.00),
+        'date_border':  (0.78, 0.82, 0.87, 0.95),
+        'inset_bg':     (0.18, 0.02, 0.02, 0.88),
+        'inset_fg':     (1.00, 0.35, 0.35),
+        'inset_border': (0.78, 0.82, 0.87, 0.95),
     },
 }
 
 SIZES         = {'Small': 160, 'Medium': 260, 'Large': 360, 'XLarge': 480}
 MODES         = ['Analog', 'Digital', 'Both']
 MARKER_STYLES = ['Marks', 'Numbers', 'Roman']
+HAND_STYLES   = ['Classic', 'Deco', 'Modern']
 ROMAN         = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII']
 WIN_MODES     = ['Normal', 'Hidden']
 
@@ -500,6 +519,7 @@ class ClockWindow(Gtk.Window):
         self.show_seconds  = bool(state.get('show_seconds', True))
         self.show_date     = bool(state.get('show_date', True))
         self.marker_style  = state.get('marker_style', 'Marks')
+        self.hand_style    = state.get('hand_style', 'Classic')
 
         # Window state
         saved_mode = state.get('window_mode', 'normal')
@@ -584,7 +604,8 @@ class ClockWindow(Gtk.Window):
         data = {'x': x, 'y': y, 'size_name': size_name, 'theme_name': theme_name,
                 'opacity': self.opacity_level, 'mode': self.mode,
                 'show_seconds': self.show_seconds, 'show_date': self.show_date,
-                'marker_style': self.marker_style, 'window_mode': self.window_mode}
+                'marker_style': self.marker_style, 'hand_style': self.hand_style,
+                'window_mode': self.window_mode}
         self.manager.save_window_state(self, data)
 
     def _on_configure(self, window, event):
@@ -668,6 +689,16 @@ class ClockWindow(Gtk.Window):
             marker_item.set_submenu(marker_sub)
             menu.append(marker_item)
 
+            hand_item = Gtk.MenuItem(label='Hand style')
+            hand_sub  = Gtk.Menu()
+            for name in HAND_STYLES:
+                item = Gtk.CheckMenuItem(label=name)
+                item.set_active(name == self.hand_style)
+                item.connect('activate', self._set_hand_style, name)
+                hand_sub.append(item)
+            hand_item.set_submenu(hand_sub)
+            menu.append(hand_item)
+
         size_item = Gtk.MenuItem(label='Size')
         size_sub  = Gtk.Menu()
         for name, px in SIZES.items():
@@ -722,6 +753,9 @@ class ClockWindow(Gtk.Window):
 
     def _set_marker_style(self, item, name):
         if item.get_active(): self.marker_style = name; self._save_all(); self.queue_draw()
+
+    def _set_hand_style(self, item, name):
+        if item.get_active(): self.hand_style = name; self._save_all(); self.queue_draw()
 
     def _set_mode(self, item, name):
         if item.get_active(): self.mode = name; self._save_all(); self.queue_draw()
@@ -821,7 +855,7 @@ class ClockWindow(Gtk.Window):
         stud_r      = max(4,   r * 0.055)
         outer_mark  = r - max(2, r * 0.025)
         min_len     = max(3,   r * 0.048)
-        hr_len      = min_len * 1.25
+        hr_len      = min_len * (2.5 if self.marker_style == 'Marks' else 1.25)
         min_r       = outer_mark - min_len
         hr_r        = outer_mark - hr_len
         min_w       = max(0.8, r * 0.010)
@@ -885,28 +919,43 @@ class ClockWindow(Gtk.Window):
                 cr.set_line_width(min_w); cr.stroke()
 
         # Hour marks with 3D ridge
+        _CARDINAL = {3, 6, 9, 12}
         for i in range(1, 13):
             angle = (i / 6.0) * math.pi
-            inner = hr_r if self.marker_style == 'Marks' else min_r
-            width = hr_w if self.marker_style == 'Marks' else max(1.5, r * 0.016)
-            if self.marker_style == 'Marks':
+            is_marks   = self.marker_style == 'Marks'
+            is_cardinal = is_marks and (i in _CARDINAL)
+            if is_marks:
+                this_hr_len = hr_len * (1.30 if is_cardinal else 1.0)
+                inner = outer_mark - this_hr_len
+                width = hr_w
                 b_r, b_g, b_b = hr, hg, hb
             else:
+                inner = min_r
+                width = max(1.5, r * 0.016)
                 b_r, b_g, b_b = mr * 0.60, mg * 0.60, mb * 0.60
             perp = angle + math.pi / 2
             off  = max(0.6, r * 0.006)
             dx   = math.sin(perp) * off; dy = -math.cos(perp) * off
             ox   = outer_mark * math.sin(angle); oy = -outer_mark * math.cos(angle)
             ix   = inner * math.sin(angle);      iy = -inner * math.cos(angle)
-            cr.move_to(cx+ox+dx, cy+oy+dy); cr.line_to(cx+ix+dx, cy+iy+dy)
-            cr.set_source_rgba(b_r*0.40, b_g*0.40, b_b*0.40, 0.80)
-            cr.set_line_width(width); cr.stroke()
-            cr.move_to(cx+ox-dx, cy+oy-dy); cr.line_to(cx+ix-dx, cy+iy-dy)
-            cr.set_source_rgba(min(1,b_r*1.6), min(1,b_g*1.6), min(1,b_b*1.6), 0.80)
-            cr.set_line_width(width); cr.stroke()
-            cr.move_to(cx+ox, cy+oy); cr.line_to(cx+ix, cy+iy)
-            cr.set_source_rgba(b_r, b_g, b_b, 0.95)
-            cr.set_line_width(width); cr.stroke()
+
+            def _mark(xo=0, yo=0):
+                cr.move_to(cx+ox+dx+xo, cy+oy+dy+yo); cr.line_to(cx+ix+dx+xo, cy+iy+dy+yo)
+                cr.set_source_rgba(b_r*0.40, b_g*0.40, b_b*0.40, 0.80)
+                cr.set_line_width(width); cr.stroke()
+                cr.move_to(cx+ox-dx+xo, cy+oy-dy+yo); cr.line_to(cx+ix-dx+xo, cy+iy-dy+yo)
+                cr.set_source_rgba(min(1,b_r*1.6), min(1,b_g*1.6), min(1,b_b*1.6), 0.80)
+                cr.set_line_width(width); cr.stroke()
+                cr.move_to(cx+ox+xo, cy+oy+yo); cr.line_to(cx+ix+xo, cy+iy+yo)
+                cr.set_source_rgba(b_r, b_g, b_b, 0.95)
+                cr.set_line_width(width); cr.stroke()
+
+            if is_cardinal:
+                sep = max(width * 3.5, r * 0.022)
+                sx  = math.sin(perp) * sep / 2; sy = -math.cos(perp) * sep / 2
+                _mark(-sx, -sy); _mark(sx, sy)
+            else:
+                _mark()
 
         # Numbers / Roman labels
         if self.marker_style in ('Numbers', 'Roman'):
@@ -946,29 +995,30 @@ class ClockWindow(Gtk.Window):
             box_w  = min(tw_i + pad_x * 2, max_hw * 2)
             box_h  = th_i + pad_y * 2
             bx     = cx - box_w / 2; by = inset_cy - box_h / 2
-            rad    = max(3, box_h * 0.28)
-            cr.set_source_rgba(0.18, 0.02, 0.02, 0.88)
+            rad          = max(3, box_h * 0.28)
+            inset_bg     = t.get('inset_bg',     (0.18, 0.02, 0.02, 0.88))
+            inset_border = t.get('inset_border', (0.78, 0.82, 0.87, 0.95))
+            inset_fg     = t.get('inset_fg',     (1.00, 0.35, 0.35))
+            cr.set_source_rgba(*inset_bg)
             self._rounded_rect(cr, bx, by, box_w, box_h, rad); cr.fill()
-            cr.set_source_rgba(0.78, 0.82, 0.87, 0.95)
+            cr.set_source_rgba(*inset_border)
             cr.set_line_width(max(1.0, r * 0.009))
             self._rounded_rect(cr, bx, by, box_w, box_h, rad); cr.stroke()
-            self._draw_text(cr, cx, inset_cy, time_str, fs_inset, (1.0, 0.35, 0.35), anchor='centre')
+            self._draw_text(cr, cx, inset_cy, time_str, fs_inset, inset_fg, anchor='centre')
 
         # Hands (in front of date/inset windows)
-        def hand(angle, length, width, rgba, tail=0.15):
-            cr.set_line_width(width); cr.set_line_cap(cairo.LINE_CAP_ROUND)
-            cr.set_source_rgba(*rgba)
-            cr.move_to(cx - tail * length * math.sin(angle), cy + tail * length * math.cos(angle))
-            cr.line_to(cx + length * math.sin(angle), cy - length * math.cos(angle)); cr.stroke()
-
         h_angle = ((hrs + mins / 60.0) / 6.0) * math.pi
-        hand(h_angle, r * 0.54, hand_hr_w + max(1.5, r * 0.020), (0.25, 0.25, 0.28, 0.85))
-        hand(h_angle, r * 0.54, hand_hr_w, t['hour_hand'])
+        self._draw_hand(cr, cx, cy, h_angle, r * 0.54, hand_hr_w + max(1.5, r * 0.020), (0.25, 0.25, 0.28, 0.85))
+        self._draw_hand(cr, cx, cy, h_angle, r * 0.54, hand_hr_w, t['hour_hand'])
         m_angle = ((mins + secs / 60.0) / 30.0) * math.pi
-        hand(m_angle, r * 0.78, hand_min_w + max(1.5, r * 0.018), (0.12, 0.12, 0.15, 0.80))
-        hand(m_angle, r * 0.78, hand_min_w, t['min_hand'])
+        self._draw_hand(cr, cx, cy, m_angle, r * 0.78, hand_min_w + max(1.5, r * 0.018), (0.12, 0.12, 0.15, 0.80))
+        self._draw_hand(cr, cx, cy, m_angle, r * 0.78, hand_min_w, t['min_hand'])
         if self.show_seconds:
-            hand((secs / 30.0) * math.pi, r * 0.84, hand_sec_w, t['second'])
+            s_angle = (secs / 30.0) * math.pi
+            cr.set_line_width(hand_sec_w); cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.set_source_rgba(*t['second'])
+            cr.move_to(cx - 0.15 * r * 0.84 * math.sin(s_angle), cy + 0.15 * r * 0.84 * math.cos(s_angle))
+            cr.line_to(cx + r * 0.84 * math.sin(s_angle), cy - r * 0.84 * math.cos(s_angle)); cr.stroke()
 
         # Metallic stud (topmost)
         grad = cairo.RadialGradient(cx - stud_r*0.35, cy - stud_r*0.35, stud_r*0.05, cx, cy, stud_r)
@@ -1009,13 +1059,16 @@ class ClockWindow(Gtk.Window):
         win_cx = cx + (stud_r + x_3_inner) / 2
         wx = win_cx - win_w / 2; wy = cy - win_h / 2
 
-        cr.set_source_rgba(0.96, 0.96, 0.94, 0.97)
+        date_bg     = t.get('date_bg',     (0.96, 0.96, 0.94, 0.97))
+        date_fg     = t.get('date_fg',     (0.05, 0.05, 0.05, 1.00))
+        date_border = t.get('date_border', (0.78, 0.82, 0.87, 0.95))
+        cr.set_source_rgba(*date_bg)
         self._rounded_rect(cr, wx, wy, win_w, win_h, max(2, win_h * 0.15)); cr.fill()
-        cr.set_source_rgba(0.78, 0.82, 0.87, 0.95)
+        cr.set_source_rgba(*date_border)
         cr.set_line_width(max(0.8, r * 0.009))
         self._rounded_rect(cr, wx, wy, win_w, win_h, max(2, win_h * 0.15)); cr.stroke()
         cr.move_to(wx + pad_x, wy + pad_y)
-        cr.set_source_rgba(0.05, 0.05, 0.05, 1)
+        cr.set_source_rgba(*date_fg)
         PangoCairo.show_layout(cr, layout)
 
     def _draw_digital(self, cr, w, h, now):
@@ -1086,6 +1139,40 @@ class ClockWindow(Gtk.Window):
         cr.set_source_rgba(rgb[0], rgb[1], rgb[2], alpha)
         PangoCairo.show_layout(cr, layout)
 
+    def _draw_hand(self, cr, cx, cy, angle, length, width, rgba, tail_frac=0.15):
+        sa    = math.sin(angle); ca = math.cos(angle)
+        tail  = length * tail_frac
+        tip_x = cx + length * sa;  tip_y = cy - length * ca
+        tl_x  = cx - tail   * sa;  tl_y  = cy + tail   * ca
+        cr.save()
+        cr.set_source_rgba(*rgba)
+        if self.hand_style == 'Deco':
+            pa  = angle + math.pi / 2
+            ps  = math.sin(pa); pc = math.cos(pa)
+            w   = width * 1.5
+            wpx = cx + length * 0.35 * sa; wpy = cy - length * 0.35 * ca
+            cr.new_sub_path()
+            cr.move_to(tip_x, tip_y)
+            cr.line_to(wpx + w * ps, wpy - w * pc)
+            cr.line_to(tl_x, tl_y)
+            cr.line_to(wpx - w * ps, wpy + w * pc)
+            cr.close_path(); cr.fill()
+        elif self.hand_style == 'Modern':
+            pa   = angle + math.pi / 2
+            ps   = math.sin(pa); pc = math.cos(pa)
+            thin = max(1.0, width * 0.30)
+            cr.new_sub_path()
+            cr.move_to(tip_x, tip_y)
+            cr.line_to(cx + thin * ps, cy - thin * pc)
+            cr.line_to(tl_x, tl_y)
+            cr.line_to(cx - thin * ps, cy + thin * pc)
+            cr.close_path(); cr.fill()
+            cr.arc(tl_x, tl_y, width * 0.85, 0, 2 * math.pi); cr.fill()
+        else:  # Classic
+            cr.set_line_width(width); cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.move_to(tl_x, tl_y); cr.line_to(tip_x, tip_y); cr.stroke()
+        cr.restore()
+
     def _rounded_rect(self, cr, x, y, w, h, radius):
         cr.new_sub_path()
         cr.arc(x + w - radius, y + radius,     radius, -math.pi/2, 0)
@@ -1134,7 +1221,7 @@ class ClockManager:
             # Save shared visual settings (not position or window_mode)
             shared = load_state()
             for k in ('size_name','theme_name','opacity','mode',
-                      'show_seconds','show_date','marker_style'):
+                      'show_seconds','show_date','marker_style','hand_style'):
                 if k in data: shared[k] = data[k]
             shared['sync_settings'] = self.sync
             save_state(shared)
@@ -1150,6 +1237,7 @@ class ClockManager:
                 w.show_seconds  = bool(data.get('show_seconds', w.show_seconds))
                 w.show_date     = bool(data.get('show_date', w.show_date))
                 w.marker_style  = data.get('marker_style', w.marker_style)
+                w.hand_style    = data.get('hand_style',   w.hand_style)
                 if w.theme is not THEMES['Clear']:
                     w.set_opacity(w.opacity_level)
                 else:
