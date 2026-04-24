@@ -9,6 +9,11 @@ import math
 import json
 import os
 import signal
+import warnings
+# Gtk.StatusIcon is deprecated but replacing it with AppIndicator requires a
+# significant restructure of the tray event model.  Suppress those warnings
+# until we do that migration; all other deprecations are fixed below.
+warnings.filterwarnings('ignore', message='.*StatusIcon.*', category=DeprecationWarning)
 import uuid
 import wave
 import array
@@ -529,7 +534,7 @@ class ClockWindow(Gtk.Window):
         self._saved_pos   = (state['x'], state['y']) if 'x' in state else None
 
         self._build_window()
-        self.set_opacity(1.0 if self.theme is THEMES['Clear'] else self.opacity_level)
+        self.props.opacity = 1.0 if self.theme is THEMES['Clear'] else self.opacity_level
 
         if self.window_mode == 'hidden':
             GLib.idle_add(lambda: self.set_window_mode('hidden') or False)
@@ -780,12 +785,12 @@ class ClockWindow(Gtk.Window):
     def _set_theme(self, item, theme):
         if item.get_active():
             self.theme = theme
-            self.set_opacity(1.0 if theme is THEMES['Clear'] else self.opacity_level)
+            self.props.opacity = 1.0 if theme is THEMES['Clear'] else self.opacity_level
             self._save_all(); self.queue_draw()
 
     def _set_opacity(self, item, val):
         if item.get_active():
-            self.opacity_level = val; self.set_opacity(val); self._save_all()
+            self.opacity_level = val; self.props.opacity = val; self._save_all()
 
     def _snap(self, item, pos):
         g = self.monitor_geom; pad = 20
@@ -1199,9 +1204,9 @@ class ClockManager:
         self.windows       = []
         self._active_alert = None
 
-        screen = Gdk.Screen.get_default()
-        for i in range(screen.get_n_monitors()):
-            geom  = screen.get_monitor_geometry(i)
+        display = Gdk.Display.get_default()
+        for i in range(display.get_n_monitors()):
+            geom  = display.get_monitor(i).get_geometry()
             state = self._load_window_state(i, geom, shared)
             win   = ClockWindow(self, i, geom, state)
             self.windows.append(win)
@@ -1251,9 +1256,9 @@ class ClockManager:
                 w.marker_style  = data.get('marker_style', w.marker_style)
                 w.hand_style    = data.get('hand_style',   w.hand_style)
                 if w.theme is not THEMES['Clear']:
-                    w.set_opacity(w.opacity_level)
+                    w.props.opacity = w.opacity_level
                 else:
-                    w.set_opacity(1.0)
+                    w.props.opacity = 1.0
                 w.queue_draw()
 
     def _build_tray(self):
@@ -1332,8 +1337,10 @@ class ClockManager:
 
     def _tray_menu(self, icon, button, time):
         menu = Gtk.Menu()
-        screen      = Gdk.Screen.get_default()
-        primary_idx = screen.get_primary_monitor()
+        display     = Gdk.Display.get_default()
+        primary_mon = display.get_primary_monitor()
+        primary_idx = next((i for i in range(display.get_n_monitors())
+                            if display.get_monitor(i) == primary_mon), 0)
 
         # Per-monitor: visibility + snap + options (when click-through active)
         for win in self.windows:
@@ -1460,7 +1467,7 @@ class ClockManager:
         menu.append(quit_item)
 
         menu.show_all()
-        menu.popup(None, None, Gtk.StatusIcon.position_menu, icon, button, time)
+        menu.popup(None, None, None, None, button, time)
 
     def _set_win_mode(self, item, win, mode):
         if item.get_active():
