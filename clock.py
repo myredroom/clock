@@ -793,30 +793,32 @@ class ClockWindow(Gtk.Window):
             self.opacity_level = val; self.props.opacity = val; self._save_all()
 
     def _snap(self, item, pos):
-        # Use the monitor the window is actually on, not the one assigned at startup.
-        # If the window has drifted onto the other monitor, this prevents snap
-        # calculating positions relative to the wrong monitor.
+        # Find the monitor the window is actually on; fall back to centre of
+        # the assigned monitor if the GDK window isn't realised yet.
+        display = self.get_display()
         gdk_win = self.get_window()
         if gdk_win:
-            g = self.get_display().get_monitor_at_window(gdk_win).get_geometry()
+            mon = display.get_monitor_at_window(gdk_win)
         else:
-            g = self.monitor_geom
-        pad = 20
-        nx = {
-            'tr': g.x + g.width  - self.size - pad,
-            'tl': g.x + pad,
-            'br': g.x + g.width  - self.size - pad,
-            'bl': g.x + pad,
-        }[pos]
-        ny = {
-            'tr': g.y + pad,
-            'tl': g.y + pad,
-            'br': g.y + g.height - self.size - pad,
-            'bl': g.y + g.height - self.size - pad,
-        }[pos]
-        # Clamp to monitor bounds to guard against any WM position rounding
-        nx = max(g.x, min(nx, g.x + g.width  - self.size))
-        ny = max(g.y, min(ny, g.y + g.height - self.size))
+            cx = int(self.monitor_geom.x + self.monitor_geom.width  / 2)
+            cy = int(self.monitor_geom.y + self.monitor_geom.height / 2)
+            mon = display.get_monitor_at_point(cx, cy)
+
+        # Use workarea so the gap is measured from the usable edge (excludes
+        # panels/taskbars).  Compute the gap in physical mm so it looks
+        # consistent regardless of resolution or monitor size.
+        wa   = mon.get_workarea()
+        mm_w = mon.get_width_mm()
+        mm_h = mon.get_height_mm()
+        gx   = max(30, round(10 * wa.width  / mm_w)) if mm_w > 0 else 30
+        gy   = max(30, round(10 * wa.height / mm_h)) if mm_h > 0 else 30
+
+        nx = (wa.x + wa.width  - self.size - gx) if pos in ('tr', 'br') else (wa.x + gx)
+        ny = (wa.y + gy)                          if pos in ('tr', 'tl') else (wa.y + wa.height - self.size - gy)
+
+        # Clamp so the clock can never leave the workarea
+        nx = max(wa.x, min(nx, wa.x + wa.width  - self.size))
+        ny = max(wa.y, min(ny, wa.y + wa.height - self.size))
         self.move(nx, ny)
 
     # ── Drawing ───────────────────────────────────────────────────────
