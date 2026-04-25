@@ -793,32 +793,45 @@ class ClockWindow(Gtk.Window):
             self.opacity_level = val; self.props.opacity = val; self._save_all()
 
     def _snap(self, item, pos):
-        # Find the monitor the window is actually on; fall back to centre of
-        # the assigned monitor if the GDK window isn't realised yet.
         display = self.get_display()
-        gdk_win = self.get_window()
-        if gdk_win:
-            mon = display.get_monitor_at_window(gdk_win)
-        else:
-            cx = int(self.monitor_geom.x + self.monitor_geom.width  / 2)
-            cy = int(self.monitor_geom.y + self.monitor_geom.height / 2)
-            mon = display.get_monitor_at_point(cx, cy)
 
-        # Use workarea so the gap is measured from the usable edge (excludes
-        # panels/taskbars).  Compute the gap in physical mm so it looks
-        # consistent regardless of resolution or monitor size.
-        wa   = mon.get_workarea()
+        # Always snap to the ASSIGNED monitor (centre of monitor_geom is
+        # guaranteed to be inside it).  Never use get_monitor_at_window():
+        # if the window has drifted onto the other monitor that would snap
+        # to the wrong place and the error would compound every time.
+        cx  = int(self.monitor_geom.x + self.monitor_geom.width  / 2)
+        cy  = int(self.monitor_geom.y + self.monitor_geom.height / 2)
+        mon = display.get_monitor_at_point(cx, cy)
+        g   = mon.get_geometry()
+
+        # Physical gap (~10 mm, min 30 px)
         mm_w = mon.get_width_mm()
         mm_h = mon.get_height_mm()
-        gx   = max(30, round(10 * wa.width  / mm_w)) if mm_w > 0 else 30
-        gy   = max(30, round(10 * wa.height / mm_h)) if mm_h > 0 else 30
+        gx   = max(30, round(10 * g.width  / mm_w)) if mm_w > 0 else 30
+        gy   = max(30, round(10 * g.height / mm_h)) if mm_h > 0 else 30
 
-        nx = (wa.x + wa.width  - self.size - gx) if pos in ('tr', 'br') else (wa.x + gx)
-        ny = (wa.y + gy)                          if pos in ('tr', 'tl') else (wa.y + wa.height - self.size - gy)
+        # Panel clearance: GDK only records the strut on the primary monitor,
+        # but Cinnamon's top panel spans the full desktop.  Take the maximum
+        # top/bottom offset seen across all monitors so every clock clears it.
+        top_px = max(
+            m.get_workarea().y - m.get_geometry().y
+            for m in (display.get_monitor(i) for i in range(display.get_n_monitors()))
+        )
+        bot_px = max(
+            (m.get_geometry().y + m.get_geometry().height) -
+            (m.get_workarea().y + m.get_workarea().height)
+            for m in (display.get_monitor(i) for i in range(display.get_n_monitors()))
+        )
 
-        # Clamp so the clock can never leave the workarea
-        nx = max(wa.x, min(nx, wa.x + wa.width  - self.size))
-        ny = max(wa.y, min(ny, wa.y + wa.height - self.size))
+        # Safe area for this monitor
+        ax = g.x;              aw = g.width
+        ay = g.y + top_px;     ah = g.height - top_px - bot_px
+
+        nx = (ax + aw - self.size - gx) if pos in ('tr', 'br') else (ax + gx)
+        ny = (ay + gy)                  if pos in ('tr', 'tl') else (ay + ah - self.size - gy)
+
+        nx = max(ax, min(nx, ax + aw - self.size))
+        ny = max(ay, min(ny, ay + ah - self.size))
         self.move(nx, ny)
 
     # ── Drawing ───────────────────────────────────────────────────────
