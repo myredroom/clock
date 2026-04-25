@@ -793,46 +793,18 @@ class ClockWindow(Gtk.Window):
             self.opacity_level = val; self.props.opacity = val; self._save_all()
 
     def _snap(self, item, pos):
-        display = self.get_display()
+        g   = self.monitor_geom
+        gap = 40
 
-        # Always snap to the ASSIGNED monitor (centre of monitor_geom is
-        # guaranteed to be inside it).  Never use get_monitor_at_window():
-        # if the window has drifted onto the other monitor that would snap
-        # to the wrong place and the error would compound every time.
-        cx  = int(self.monitor_geom.x + self.monitor_geom.width  / 2)
-        cy  = int(self.monitor_geom.y + self.monitor_geom.height / 2)
-        mon = display.get_monitor_at_point(cx, cy)
-        g   = mon.get_geometry()
+        if   pos == 'tl': nx, ny = g.x + gap,                      g.y + gap
+        elif pos == 'tr': nx, ny = g.x + g.width - self.size - gap, g.y + gap
+        elif pos == 'bl': nx, ny = g.x + gap,                      g.y + g.height - self.size - gap
+        else:             nx, ny = g.x + g.width - self.size - gap, g.y + g.height - self.size - gap
 
-        # Physical gap (~10 mm, min 30 px)
-        mm_w = mon.get_width_mm()
-        mm_h = mon.get_height_mm()
-        gx   = max(30, round(10 * g.width  / mm_w)) if mm_w > 0 else 30
-        gy   = max(30, round(10 * g.height / mm_h)) if mm_h > 0 else 30
-
-        # Panel clearance: GDK only records the strut on the primary monitor,
-        # but Cinnamon's top panel spans the full desktop.  Take the maximum
-        # top/bottom offset seen across all monitors so every clock clears it.
-        top_px = max(
-            m.get_workarea().y - m.get_geometry().y
-            for m in (display.get_monitor(i) for i in range(display.get_n_monitors()))
-        )
-        bot_px = max(
-            (m.get_geometry().y + m.get_geometry().height) -
-            (m.get_workarea().y + m.get_workarea().height)
-            for m in (display.get_monitor(i) for i in range(display.get_n_monitors()))
-        )
-
-        # Safe area for this monitor
-        ax = g.x;              aw = g.width
-        ay = g.y + top_px;     ah = g.height - top_px - bot_px
-
-        nx = (ax + aw - self.size - gx) if pos in ('tr', 'br') else (ax + gx)
-        ny = (ay + gy)                  if pos in ('tr', 'tl') else (ay + ah - self.size - gy)
-
-        nx = max(ax, min(nx, ax + aw - self.size))
-        ny = max(ay, min(ny, ay + ah - self.size))
+        # Muffin only applies one axis per move() when both change.
+        # A second call 150 ms later (after the first has settled) fixes it.
         self.move(nx, ny)
+        GLib.timeout_add(150, lambda: self.move(nx, ny) or False)
 
     # ── Drawing ───────────────────────────────────────────────────────
 
