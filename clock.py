@@ -801,10 +801,25 @@ class ClockWindow(Gtk.Window):
         elif pos == 'bl': nx, ny = g.x + gap,                      g.y + g.height - self.size - gap
         else:             nx, ny = g.x + g.width - self.size - gap, g.y + g.height - self.size - gap
 
-        # Muffin only applies one axis per move() when both change.
-        # A second call 150 ms later (after the first has settled) fixes it.
+        # Muffin applies only one axis per move() call when both x and y
+        # need to change.  We react to each configure-event (the WM telling
+        # us where it actually put the window) and re-issue move() until the
+        # position is correct.  Bounded to 8 iterations to avoid any loop.
+        attempts = [0]
+        hid      = [None]
+
+        def on_configure(win, event):
+            attempts[0] += 1
+            correct = abs(event.x - nx) <= 1 and abs(event.y - ny) <= 1
+            if correct or attempts[0] >= 8:
+                if hid[0] is not None:
+                    self.disconnect(hid[0])
+                    hid[0] = None
+            else:
+                self.move(nx, ny)
+
+        hid[0] = self.connect_after('configure-event', on_configure)
         self.move(nx, ny)
-        GLib.timeout_add(150, lambda: self.move(nx, ny) or False)
 
     # ── Drawing ───────────────────────────────────────────────────────
 
