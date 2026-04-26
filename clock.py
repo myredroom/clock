@@ -555,13 +555,14 @@ class ClockWindow(Gtk.Window):
         if visual:
             self.set_visual(visual)
 
-        self.set_default_size(self.size, self.size)
+        cw, ch = self._clock_size()
+        self.set_default_size(cw, ch)
 
         g = self.monitor_geom
         if self._saved_pos:
             self.move(*self._saved_pos)
         else:
-            self.move(g.x + g.width - self.size - 20, g.y + 20)
+            self.move(g.x + g.width - cw - 20, g.y + 20)
 
         self.connect('configure-event', self._on_configure)
         self.connect('destroy', lambda _: self._save_all())
@@ -581,6 +582,7 @@ class ClockWindow(Gtk.Window):
         if child: self.remove(child)
         self.add(self.da)
         self.show_all()
+        GLib.idle_add(self._apply_window_size)
 
     # ── Window mode ───────────────────────────────────────────────────
 
@@ -639,7 +641,11 @@ class ClockWindow(Gtk.Window):
     def _on_motion(self, widget, event):
         if self._drag_offset:
             ox, oy = self._drag_offset
-            self.move(int(event.x_root - ox), int(event.y_root - oy))
+            l, t, r, b = self._constraint_rect()
+            cw, ch = self._clock_size()
+            nx = max(l, min(int(event.x_root - ox), r - cw))
+            ny = max(t, min(int(event.y_root - oy), b - ch))
+            self.move(nx, ny)
 
     # ── Right-click menu ──────────────────────────────────────────────
 
@@ -751,10 +757,14 @@ class ClockWindow(Gtk.Window):
         menu.popup_at_pointer(event)
 
     def _toggle_seconds(self, item):
-        self.show_seconds = item.get_active(); self._save_all(); self.queue_draw()
+        self.show_seconds = item.get_active()
+        if self.mode == 'Digital': self._apply_window_size()
+        self._save_all(); self.queue_draw()
 
     def _toggle_date(self, item):
-        self.show_date = item.get_active(); self._save_all(); self.queue_draw()
+        self.show_date = item.get_active()
+        if self.mode == 'Digital': self._apply_window_size()
+        self._save_all(); self.queue_draw()
 
     def _set_marker_style(self, item, name):
         if item.get_active(): self.marker_style = name; self._save_all(); self.queue_draw()
@@ -763,24 +773,30 @@ class ClockWindow(Gtk.Window):
         if item.get_active(): self.hand_style = name; self._save_all(); self.queue_draw()
 
     def _set_mode(self, item, name):
-        if item.get_active(): self.mode = name; self._save_all(); self.queue_draw()
+        if item.get_active():
+            self.mode = name
+            self._apply_window_size()
+            self._save_all(); self.queue_draw()
 
     def _set_size(self, item, px):
         if not item.get_active(): return
+        cw, ch = self._clock_size()
         wx, wy = self.get_position()
-        cx, cy = wx + self.size // 2, wy + self.size // 2
+        cx, cy = wx + cw // 2, wy + ch // 2
         self.size = px
         self._resizing = True
-        self.set_size_request(px, px); self.resize(px, px)
-        self.move(cx - px // 2, cy - px // 2)
-        GLib.idle_add(self._finish_resize, cx, cy)
+        self._apply_window_size()
+        ncw, nch = self._clock_size()
+        nx, ny = cx - ncw // 2, cy - nch // 2
+        self.move(nx, ny)
+        GLib.idle_add(self._finish_resize, nx, ny)
 
-    def _finish_resize(self, cx, cy):
-        self.move(cx - self.size // 2, cy - self.size // 2)
+    def _finish_resize(self, nx, ny):
+        self.move(nx, ny)
         self._resizing = False
-        wx, wy = self.get_position()
-        self._saved_pos = (wx, wy)
-        self._save_all(wx, wy); return False
+        self._saved_pos = (nx, ny)
+        self._save_all(nx, ny)
+        return False
 
     def _set_theme(self, item, theme):
         if item.get_active():
@@ -792,27 +808,73 @@ class ClockWindow(Gtk.Window):
         if item.get_active():
             self.opacity_level = val; self.props.opacity = val; self._save_all()
 
+    # ── Geometry helpers ──────────────────────────────────────────────
+
+    def _digital_content_size(self):
+        """Measure the actual drawn box for digital mode using self.size as reference."""
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.size, self.size)
+        cr   = cairo.Context(surf)
+        now  = datetime.now()
+        time_fmt  = '%H:%M:%S' if self.show_seconds else '%H:%M'
+        time_str  = now.strftime(time_fmt)
+        date_str  = now.strftime('%a %d %b')
+        time_size = self._fit_font_size(cr, time_str, self.size * 0.88)
+        date_size = max(8, time_size // 3)
+        tw, th    = self._text_size(cr, time_str, time_size)
+        dw, dh    = self._text_size(cr, date_str,  date_size)
+        n      = self._active_alarm_count()
+        show_d = self.show_date
+        pad_x  = tw * 0.10; pad_y = th * 0.30
+        g      = th * 0.18
+        bs     = max(14, th * 0.55) if n > 0 else 0
+        rows_h = th
+        if n > 0:  rows_h += g + bs
+        if show_d: rows_h += g + dh
+        box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, self.size - 16)
+        box_h = rows_h + pad_y * 2
+        return int(box_w) + 4, int(box_h) + 4   # +4 gives 2px margin for border stroke
+
+    def _clock_size(self):
+        """Return (width, height) of the clock window for the current mode."""
+        if self.mode == 'Digital':
+            return self._digital_content_size()
+        return self.size, self.size
+
+    def _constraint_rect(self):
+        """Return (left, top, right, bottom) of the draggable area for this monitor."""
+        try:
+            display = Gdk.Display.get_default()
+            mon = display.get_monitor(self.monitor_idx)
+            wa  = mon.get_workarea()
+            px_per_mm = mon.get_geometry().width / max(mon.get_width_mm(), 1)
+            gap = max(8, round(5 * px_per_mm))
+            return (wa.x + gap, wa.y + gap,
+                    wa.x + wa.width  - gap,
+                    wa.y + wa.height - gap)
+        except Exception:
+            g = self.monitor_geom
+            gap = 40
+            return (g.x + gap, g.y + gap,
+                    g.x + g.width  - gap,
+                    g.y + g.height - gap)
+
+    def _apply_window_size(self):
+        """Resize the window to match the current mode's content dimensions."""
+        cw, ch = self._clock_size()
+        self.set_size_request(cw, ch)
+        self.resize(cw, ch)
+        return False   # safe to use as GLib.idle_add callback
+
     def _snap(self, item, pos):
-        g   = self.monitor_geom
-        gap = 40
-
-        if   pos == 'tl': nx, ny = g.x + gap,                      g.y + gap
-        elif pos == 'tr': nx, ny = g.x + g.width - self.size - gap, g.y + gap
-        elif pos == 'bl': nx, ny = g.x + gap,                      g.y + g.height - self.size - gap
-        else:             nx, ny = g.x + g.width - self.size - gap, g.y + g.height - self.size - gap
-
-        # gtk_window_move() goes through Muffin which applies only one axis
-        # at a time.  wmctrl uses _NET_MOVERESIZE_WINDOW, a single atomic
-        # EWMH client message that carries x AND y together — Muffin must
-        # honour both in one operation.
-        gdk_win = self.get_window()
-        if gdk_win:
-            xid = gdk_win.get_xid()
-            subprocess.run(
-                ['wmctrl', '-ir', hex(xid), '-e', f'0,{nx},{ny},-1,-1'],
-                capture_output=True)
-        else:
-            self.move(nx, ny)
+        l, t, r, b = self._constraint_rect()
+        cw, ch = self._clock_size()
+        if   pos == 'tl': nx, ny = l,      t
+        elif pos == 'tr': nx, ny = r - cw, t
+        elif pos == 'bl': nx, ny = l,      b - ch
+        else:             nx, ny = r - cw, b - ch
+        self.move(nx, ny)
+        self._saved_pos = (nx, ny)
+        self._save_all(nx, ny)
 
     # ── Drawing ───────────────────────────────────────────────────────
 
@@ -1095,7 +1157,7 @@ class ClockWindow(Gtk.Window):
         time_fmt  = '%H:%M:%S' if self.show_seconds else '%H:%M'
         time_str  = now.strftime(time_fmt)
         date_str  = now.strftime('%a %d %b')
-        time_size = self._fit_font_size(cr, time_str, w * 0.88)
+        time_size = self._fit_font_size(cr, time_str, self.size * 0.88)
         date_size = max(8, time_size // 3)
         tw, th    = self._text_size(cr, time_str, time_size)
         dw, dh    = self._text_size(cr, date_str,  date_size)
@@ -1110,7 +1172,7 @@ class ClockWindow(Gtk.Window):
         if n > 0:     rows_h += g + bs
         if show_d:    rows_h += g + dh
 
-        box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, w - 16)
+        box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, self.size - 16)
         box_h = rows_h + pad_y * 2
         bx    = cx - box_w / 2; by = cy - box_h / 2
 
