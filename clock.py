@@ -1756,6 +1756,10 @@ class ClockManager:
         exit_item = Gtk.MenuItem(label='Exit')
         exit_item.connect('activate', lambda _: self._quit())
         menu.append(exit_item)
+        menu.append(Gtk.SeparatorMenuItem())
+        close_item = Gtk.MenuItem(label='Close menu')
+        close_item.connect('activate', lambda _: None)
+        menu.append(close_item)
         menu.show_all()
         menu.popup(None, None, None, None, button, time)
 
@@ -1900,13 +1904,9 @@ class ClockManager:
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        # On X11, menus can't be dismissed by clicking the tray icon (grab limitation),
-        # so expose Exit here. On Wayland this isn't needed — toggle works natively.
-        if not os.environ.get('WAYLAND_DISPLAY'):
-            exit_item = Gtk.MenuItem(label='Exit')
-            exit_item.connect('activate', lambda _: self._quit())
-            menu.append(exit_item)
-            menu.append(Gtk.SeparatorMenuItem())
+        close_item = Gtk.MenuItem(label='Close menu')
+        close_item.connect('activate', lambda _: None)
+        menu.append(close_item)
 
         menu.show_all()
         menu.popup(None, None, None, None, button, time)
