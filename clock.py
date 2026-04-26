@@ -504,6 +504,14 @@ MARKER_STYLES = ['Marks', 'Numbers', 'Roman']
 HAND_STYLES   = ['Classic', 'Deco', 'Modern']
 ROMAN         = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII']
 WIN_MODES     = ['Normal', 'Hidden']
+DIGITAL_STYLES = ['Font', '7 Seg', 'Split']
+DIGITAL_FONTS  = ['DejaVu Sans Bold', 'DejaVu Sans Mono Bold',
+                   'Ubuntu Bold', 'Liberation Sans Bold', 'FreeMono Bold']
+SEG_PATTERNS   = {
+    '0':'abcdef', '1':'bc',      '2':'abdeg',  '3':'abcdg',
+    '4':'bcfg',   '5':'acdfg',   '6':'acdefg', '7':'abc',
+    '8':'abcdefg','9':'abcdfg',  ':'  :':',    ' ':'',
+}
 
 # ─── Clock window (one per monitor) ──────────────────────────────────
 
@@ -525,6 +533,8 @@ class ClockWindow(Gtk.Window):
         self.show_date     = bool(state.get('show_date', True))
         self.marker_style  = state.get('marker_style', 'Marks')
         self.hand_style    = state.get('hand_style', 'Classic')
+        self.digital_style = state.get('digital_style', 'Font')
+        self.digital_font  = state.get('digital_font',  'DejaVu Sans Bold')
 
         # Window state
         saved_mode = state.get('window_mode', 'normal')
@@ -612,6 +622,7 @@ class ClockWindow(Gtk.Window):
                 'opacity': self.opacity_level, 'mode': self.mode,
                 'show_seconds': self.show_seconds, 'show_date': self.show_date,
                 'marker_style': self.marker_style, 'hand_style': self.hand_style,
+                'digital_style': self.digital_style, 'digital_font': self.digital_font,
                 'window_mode': self.window_mode}
         self.manager.save_window_state(self, data)
 
@@ -679,6 +690,28 @@ class ClockWindow(Gtk.Window):
         mode_item.set_submenu(mode_sub)
         menu.append(mode_item)
 
+        if self.mode == 'Digital':
+            style_item = Gtk.MenuItem(label='Style')
+            style_sub  = Gtk.Menu()
+            for sname in DIGITAL_STYLES:
+                si = Gtk.CheckMenuItem(label=sname)
+                si.set_active(sname == self.digital_style)
+                si.connect('activate', self._set_digital_style, sname)
+                style_sub.append(si)
+            style_item.set_submenu(style_sub)
+            menu.append(style_item)
+
+            if self.digital_style == 'Font':
+                font_item = Gtk.MenuItem(label='Font')
+                font_sub  = Gtk.Menu()
+                for fname in DIGITAL_FONTS:
+                    fi = Gtk.CheckMenuItem(label=fname)
+                    fi.set_active(fname == self.digital_font)
+                    fi.connect('activate', self._set_digital_font, fname)
+                    font_sub.append(fi)
+                font_item.set_submenu(font_sub)
+                menu.append(font_item)
+
         secs_item = Gtk.CheckMenuItem(label='Show seconds')
         secs_item.set_active(self.show_seconds)
         secs_item.connect('activate', self._toggle_seconds)
@@ -688,6 +721,11 @@ class ClockWindow(Gtk.Window):
         date_item.set_active(self.show_date)
         date_item.connect('activate', self._toggle_date)
         menu.append(date_item)
+
+        mid_item = Gtk.CheckMenuItem(label='Show monitor ID')
+        mid_item.set_active(self.manager.show_monitor_id)
+        mid_item.connect('activate', lambda i: self.manager.set_show_monitor_id(i.get_active()))
+        menu.append(mid_item)
 
         if self.mode in ('Analog', 'Both'):
             marker_item = Gtk.MenuItem(label='Hour markers')
@@ -773,21 +811,50 @@ class ClockWindow(Gtk.Window):
         if item.get_active(): self.hand_style = name; self._save_all(); self.queue_draw()
 
     def _set_mode(self, item, name):
-        if item.get_active():
-            self.mode = name
+        if not item.get_active(): return
+        old_cw, old_ch = self._clock_size()
+        wx, wy = self.get_position()
+        self.mode = name
+        self._apply_window_size()
+        new_cw, new_ch = self._clock_size()
+        nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+        self.move(nx, ny)
+        self._saved_pos = (nx, ny)
+        self._save_all(nx, ny); self.queue_draw()
+
+    def _set_digital_style(self, item, style):
+        if not item.get_active(): return
+        old_cw, old_ch = self._clock_size()
+        wx, wy = self.get_position()
+        self.digital_style = style
+        if self.mode == 'Digital':
             self._apply_window_size()
-            self._save_all(); self.queue_draw()
+            new_cw, new_ch = self._clock_size()
+            nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+            self.move(nx, ny); self._saved_pos = (nx, ny)
+        self._save_all(); self.queue_draw()
+
+    def _set_digital_font(self, item, font):
+        if not item.get_active(): return
+        old_cw, old_ch = self._clock_size()
+        wx, wy = self.get_position()
+        self.digital_font = font
+        if self.mode == 'Digital' and self.digital_style == 'Font':
+            self._apply_window_size()
+            new_cw, new_ch = self._clock_size()
+            nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+            self.move(nx, ny); self._saved_pos = (nx, ny)
+        self._save_all(); self.queue_draw()
 
     def _set_size(self, item, px):
         if not item.get_active(): return
-        cw, ch = self._clock_size()
+        old_cw, old_ch = self._clock_size()
         wx, wy = self.get_position()
-        cx, cy = wx + cw // 2, wy + ch // 2
         self.size = px
         self._resizing = True
         self._apply_window_size()
-        ncw, nch = self._clock_size()
-        nx, ny = cx - ncw // 2, cy - nch // 2
+        new_cw, new_ch = self._clock_size()
+        nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
         self.move(nx, ny)
         GLib.idle_add(self._finish_resize, nx, ny)
 
@@ -811,7 +878,12 @@ class ClockWindow(Gtk.Window):
     # ── Geometry helpers ──────────────────────────────────────────────
 
     def _digital_content_size(self):
-        """Measure the actual drawn box for digital mode using self.size as reference."""
+        if self.digital_style == '7 Seg': return self._7seg_content_size()
+        if self.digital_style == 'Split': return self._split_content_size()
+        return self._font_content_size()
+
+    def _font_content_size(self):
+        """Measure the font-style digital box using self.size as reference."""
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.size, self.size)
         cr   = cairo.Context(surf)
         now  = datetime.now()
@@ -832,7 +904,63 @@ class ClockWindow(Gtk.Window):
         if show_d: rows_h += g + dh
         box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, self.size - 16)
         box_h = rows_h + pad_y * 2
-        return int(box_w) + 4, int(box_h) + 4   # +4 gives 2px margin for border stroke
+        return int(box_w) + 4, int(box_h) + 4
+
+    # ── 7-segment layout helpers ──────────────────────────────────────
+
+    def _7seg_layout(self):
+        """Return (dh, dw, cw, igap, total_w) for current settings."""
+        time_str = '00:00:00' if self.show_seconds else '00:00'
+        n_dig    = sum(1 for c in time_str if c.isdigit())
+        n_col    = time_str.count(':')
+        max_w    = self.size * 0.90
+        for dh in range(self.size, 6, -1):
+            dw   = dh * 0.55
+            cw   = dw * 0.40
+            igap = max(1.0, dw * 0.10)
+            tw   = n_dig * dw + n_col * cw + (n_dig + n_col - 1) * igap
+            if tw <= max_w:
+                return dh, dw, cw, igap, tw
+        return 20, 11.0, 4.4, 1.1, 60.0
+
+    def _7seg_content_size(self):
+        dh, dw, cw, igap, total_w = self._7seg_layout()
+        pad_x = max(4.0, total_w * 0.04)
+        pad_y = max(4.0, dh * 0.18)
+        box_h = dh + pad_y * 2
+        if self.show_date:
+            box_h += max(6, dh * 0.28) + igap * 2
+        return int(total_w + pad_x * 2) + 4, int(box_h) + 4
+
+    # ── Split-flap layout helpers ─────────────────────────────────────
+
+    def _split_layout(self):
+        """Return (th, tw, t_gap, total_w) for current settings."""
+        time_str = '00:00:00' if self.show_seconds else '00:00'
+        n_chars  = len(time_str)
+        max_w    = self.size * 0.94
+        for th in range(self.size, 6, -1):
+            tw    = th * 0.70
+            t_gap = max(2.0, th * 0.05)
+            total = n_chars * tw + (n_chars - 1) * t_gap
+            if total <= max_w:
+                return th, tw, t_gap, total
+        return 20, 14.0, 1.0, 80.0
+
+    def _split_content_size(self):
+        th, tw, t_gap, total_w = self._split_layout()
+        pad_x = max(4.0, tw * 0.30)
+        pad_y = max(4.0, th * 0.15)
+        box_w = total_w + pad_x * 2
+        box_h = th + pad_y * 2
+        if self.show_date:
+            th2    = max(6, th * 0.50)
+            tw2    = th2 * 0.70
+            t_gap2 = max(1.0, th2 * 0.05)
+            date_w = 10 * tw2 + 9 * t_gap2   # 'Fri 26 Apr' = 10 chars
+            box_w  = max(box_w, date_w + pad_x * 2)
+            box_h += th2 + t_gap * 2
+        return int(box_w) + 4, int(box_h) + 4
 
     def _clock_size(self):
         """Return (width, height) of the clock window for the current mode."""
@@ -864,6 +992,27 @@ class ClockWindow(Gtk.Window):
         self.set_size_request(cw, ch)
         self.resize(cw, ch)
         return False   # safe to use as GLib.idle_add callback
+
+    def _edge_anchored_pos(self, wx, wy, old_cw, old_ch, new_cw, new_ch):
+        """Return new (x, y) for a resized window, anchoring to the nearer constraint edge.
+
+        For each axis independently: if the clock is closer to the left/top boundary,
+        keep that edge fixed; if closer to right/bottom, keep that edge fixed; if
+        exactly equidistant (genuinely centred), keep the centre.  No arbitrary
+        percentage threshold — works correctly for any clock size on any monitor.
+        """
+        l, t, r, b = self._constraint_rect()
+        left_dist  = wx - l
+        right_dist = r  - (wx + old_cw)
+        top_dist   = wy - t
+        bot_dist   = b  - (wy + old_ch)
+        if   left_dist  < right_dist: nx = wx
+        elif right_dist < left_dist:  nx = wx + old_cw - new_cw
+        else:                         nx = wx + old_cw // 2 - new_cw // 2
+        if   top_dist   < bot_dist:   ny = wy
+        elif bot_dist   < top_dist:   ny = wy + old_ch - new_ch
+        else:                         ny = wy + old_ch // 2 - new_ch // 2
+        return max(l, min(nx, r - new_cw)), max(t, min(ny, b - new_ch))
 
     def _snap(self, item, pos):
         l, t, r, b = self._constraint_rect()
@@ -897,6 +1046,26 @@ class ClockWindow(Gtk.Window):
             self._draw_digital(cr, w, h, now)
         elif self.mode == 'Both':
             self._draw_analog(cr, w, h, now, digital_inset=True)
+
+    def _id_mark_color(self, r, g, b):
+        """Return a warm-tinted version of (r,g,b) for the monitor ID marker."""
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        d   = 0.18 + lum * 0.15          # 0.18–0.33 depending on brightness
+        return (min(1.0, r + d), min(1.0, g + d * 0.25), max(0.0, b - d * 0.65))
+
+    def _id_badge_colors(self, face_rgba):
+        """Return (fill_rgba, text_rgba) slightly offset from face — subtle badge tones."""
+        r, g, b, a = face_rgba
+        if a < 0.1:  # Clear/transparent theme — use neutral
+            return (0.50, 0.50, 0.50, 0.40), (0.72, 0.72, 0.72, 0.80)
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        if lum < 0.5:  # dark — lighten
+            fill = (min(1, r+0.11), min(1, g+0.11), min(1, b+0.11), 0.80)
+            text = (min(1, r+0.24), min(1, g+0.24), min(1, b+0.24), 0.92)
+        else:          # light — darken
+            fill = (max(0, r-0.11), max(0, g-0.11), max(0, b-0.11), 0.80)
+            text = (max(0, r-0.24), max(0, g-0.24), max(0, b-0.24), 0.92)
+        return fill, text
 
     def _draw_bell(self, cr, x, y, size, rgba, rotate=0, count=0):
         cr.save()
@@ -998,6 +1167,7 @@ class ClockWindow(Gtk.Window):
                 cr.set_line_width(min_w); cr.stroke()
 
         # Hour marks with 3D ridge
+        mid       = self.monitor_idx + 1   # hour position for monitor ID highlight
         _CARDINAL = {3, 6, 9, 12}
         for i in range(1, 13):
             angle = (i / 6.0) * math.pi
@@ -1012,6 +1182,8 @@ class ClockWindow(Gtk.Window):
                 inner = min_r
                 width = max(1.5, r * 0.016)
                 b_r, b_g, b_b = mr * 0.60, mg * 0.60, mb * 0.60
+            if self.manager.show_monitor_id and i == mid <= 12:
+                b_r, b_g, b_b = self._id_mark_color(b_r, b_g, b_b)
             perp = angle + math.pi / 2
             off  = max(0.6, r * 0.006)
             dx   = math.sin(perp) * off; dy = -math.cos(perp) * off
@@ -1048,7 +1220,11 @@ class ClockWindow(Gtk.Window):
                 layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {font_size_lbl}'))
                 lw, lh = layout.get_pixel_size()
                 cr.move_to(lx - lw / 2, ly - lh / 2)
-                cr.set_source_rgba(hr, hg, hb, 0.95)
+                if self.manager.show_monitor_id and i == mid <= 12:
+                    ir, ig, ib = self._id_mark_color(hr, hg, hb)
+                    cr.set_source_rgba(ir, ig, ib, 0.98)
+                else:
+                    cr.set_source_rgba(hr, hg, hb, 0.95)
                 PangoCairo.show_layout(cr, layout)
 
         # Date window (before hands)
@@ -1151,7 +1327,28 @@ class ClockWindow(Gtk.Window):
         PangoCairo.show_layout(cr, layout)
 
     def _draw_digital(self, cr, w, h, now):
-        t  = self.theme
+        t = self.theme
+        if   self.digital_style == '7 Seg': self._draw_digital_7seg(cr, w, h, now, t)
+        elif self.digital_style == 'Split': self._draw_digital_split(cr, w, h, now, t)
+        else:                               self._draw_digital_font(cr, w, h, now, t)
+        self._draw_digital_badge(cr, w, h, t)
+
+    def _draw_digital_badge(self, cr, w, h, t):
+        if not self.manager.show_monitor_id: return
+        mid = self.monitor_idx + 1
+        fill_c, text_c = self._id_badge_colors(t['face'])
+        badge_r = max(7, int(h * 0.12))
+        bcx = w - badge_r - 5;  bcy = h - badge_r - 5
+        cr.arc(bcx, bcy, badge_r, 0, 2 * math.pi)
+        cr.set_source_rgba(*fill_c); cr.fill()
+        layout = PangoCairo.create_layout(cr)
+        layout.set_text(str(mid), -1)
+        layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {max(5, int(badge_r * 0.95))}'))
+        lw, lh = layout.get_pixel_size()
+        cr.move_to(bcx - lw / 2, bcy - lh / 2)
+        cr.set_source_rgba(*text_c); PangoCairo.show_layout(cr, layout)
+
+    def _draw_digital_font(self, cr, w, h, now, t):
         cx = w / 2.0; cy = h / 2.0
 
         time_fmt  = '%H:%M:%S' if self.show_seconds else '%H:%M'
@@ -1193,25 +1390,167 @@ class ClockWindow(Gtk.Window):
             y += g
             self._draw_text(cr, cx, y, date_str, date_size, t['marks'], alpha=0.75)
 
-    def _text_size(self, cr, text, size):
+    # ── 7-segment renderer ────────────────────────────────────────────
+
+    def _draw_digital_7seg(self, cr, w, h, now, t):
+        time_fmt = '%H:%M:%S' if self.show_seconds else '%H:%M'
+        time_str = now.strftime(time_fmt)
+        dh, dw, cw, igap, total_w = self._7seg_layout()
+        pad_y  = max(4.0, dh * 0.18)
+        show_d = self.show_date
+        dh2    = max(6, dh * 0.28)
+        total_h = dh + pad_y * 2 + (dh2 + igap * 2 if show_d else 0)
+
+        # Background box
+        face   = t['face']
+        face_a = 1.0 if self.opacity_level >= 1.0 else face[3]
+        cr.set_source_rgba(face[0], face[1], face[2], face_a)
+        self._rounded_rect(cr, 2, 2, w - 4, h - 4, 14); cr.fill()
+        cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
+        self._rounded_rect(cr, 2, 2, w - 4, h - 4, 14); cr.stroke()
+
+        # Segment colours — lit and dim versions of theme digital colour
+        dc     = t['digital']
+        seg_on  = (dc[0], dc[1], dc[2], 0.95)
+        seg_off = (dc[0] * 0.28, dc[1] * 0.28, dc[2] * 0.28, 0.18)
+
+        start_y = (h - total_h) / 2 + pad_y
+        start_x = (w - total_w) / 2
+        x = start_x
+        for ch in time_str:
+            if ch == ':':
+                self._draw_7seg_char(cr, x, start_y, cw, dh, ch, seg_on, seg_off)
+                x += cw + igap
+            else:
+                self._draw_7seg_char(cr, x, start_y, dw, dh, ch, seg_on, seg_off)
+                x += dw + igap
+
+        if show_d:
+            date_str  = now.strftime('%a %d %b')
+            date_size = max(6, int(dh2 * 0.80))
+            date_y    = start_y + dh + igap * 2
+            self._draw_text(cr, w / 2, date_y, date_str, date_size,
+                            t['marks'], alpha=0.70, font='DejaVu Sans Bold')
+
+    def _draw_7seg_char(self, cr, x, y, cw, ch, char, seg_on, seg_off):
+        if char == ':':
+            dot_r = max(1.5, cw * 0.22)
+            cr.set_source_rgba(*seg_on)
+            cr.arc(x + cw / 2, y + ch * 0.30, dot_r, 0, 2 * math.pi); cr.fill()
+            cr.arc(x + cw / 2, y + ch * 0.70, dot_r, 0, 2 * math.pi); cr.fill()
+            return
+        pattern = SEG_PATTERNS.get(char, '')
+        sw   = max(1.5, cw * 0.14)
+        gap  = sw * 0.45
+        hlen = cw - 2 * (sw + gap)
+        vlen = ch / 2 - sw - 2 * gap
+        r    = sw / 2
+
+        def h_seg(lit, ry):
+            cr.set_source_rgba(*(seg_on if lit else seg_off))
+            self._rounded_rect(cr, x + sw + gap, ry - sw / 2, hlen, sw, r); cr.fill()
+
+        def v_seg(lit, rx, ry):
+            cr.set_source_rgba(*(seg_on if lit else seg_off))
+            self._rounded_rect(cr, rx - sw / 2, ry, sw, vlen, r); cr.fill()
+
+        h_seg('a' in pattern, y + sw / 2)
+        v_seg('b' in pattern, x + cw - sw / 2, y + sw + gap)
+        v_seg('c' in pattern, x + cw - sw / 2, y + ch / 2 + gap)
+        h_seg('d' in pattern, y + ch - sw / 2)
+        v_seg('e' in pattern, x + sw / 2,      y + ch / 2 + gap)
+        v_seg('f' in pattern, x + sw / 2,      y + sw + gap)
+        h_seg('g' in pattern, y + ch / 2)
+
+    # ── Split-flap renderer ───────────────────────────────────────────
+
+    def _draw_digital_split(self, cr, w, h, now, t):
+        time_fmt = '%H:%M:%S' if self.show_seconds else '%H:%M'
+        time_str = now.strftime(time_fmt)
+        th, tw, t_gap, total_w = self._split_layout()
+        show_d  = self.show_date
+        th2     = max(6, th * 0.50) if show_d else 0
+        tw2     = th2 * 0.70        if show_d else 0
+        t_gap2  = max(1.0, th2 * 0.05) if show_d else 0
+
+        # Outer box (clock theme)
+        face   = t['face']
+        face_a = 1.0 if self.opacity_level >= 1.0 else face[3]
+        cr.set_source_rgba(face[0], face[1], face[2], face_a)
+        self._rounded_rect(cr, 2, 2, w - 4, h - 4, 14); cr.fill()
+        cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
+        self._rounded_rect(cr, 2, 2, w - 4, h - 4, 14); cr.stroke()
+
+        # Classic split-flap tile palette (dark, independent of clock theme)
+        tile_bg  = (0.11, 0.11, 0.14, 0.97)
+        tile_fg  = (0.94, 0.91, 0.84, 1.00)
+        split_c  = (0.04, 0.04, 0.06, 1.00)
+        tile_r   = max(2.0, th * 0.07)
+
+        total_h = th + (th2 + t_gap * 2 if show_d else 0)
+        pad_y   = (h - total_h) / 2
+        time_x  = (w - total_w) / 2
+        time_y  = pad_y
+
+        for ch in time_str:
+            self._draw_split_tile(cr, time_x, time_y, tw, th, ch,
+                                  tile_bg, tile_fg, split_c, tile_r)
+            time_x += tw + t_gap
+
+        if show_d:
+            date_str = now.strftime('%a %d %b')
+            n_date   = len(date_str)
+            date_w   = n_date * tw2 + (n_date - 1) * t_gap2
+            date_x   = (w - date_w) / 2
+            date_y   = pad_y + th + t_gap * 2
+            tile_r2  = max(1.5, th2 * 0.07)
+            for ch in date_str:
+                self._draw_split_tile(cr, date_x, date_y, tw2, th2, ch,
+                                      tile_bg, tile_fg, split_c, tile_r2)
+                date_x += tw2 + t_gap2
+
+    def _draw_split_tile(self, cr, x, y, tw, th, char, tile_bg, tile_fg, split_c, tile_r):
+        # Tile background
+        cr.set_source_rgba(*tile_bg)
+        self._rounded_rect(cr, x, y, tw, th, tile_r); cr.fill()
+        # Character
+        font_size = max(5, int(th * 0.68))
+        layout = PangoCairo.create_layout(cr)
+        layout.set_text(char, -1)
+        layout.set_font_description(Pango.FontDescription(f'Ubuntu Bold {font_size}'))
+        lw, lh = layout.get_pixel_size()
+        cr.move_to(x + tw / 2 - lw / 2, y + th / 2 - lh / 2)
+        cr.set_source_rgba(*tile_fg); PangoCairo.show_layout(cr, layout)
+        # Split line — the defining detail
+        cr.set_source_rgba(*split_c)
+        cr.set_line_width(max(0.8, th * 0.020))
+        cr.move_to(x + tile_r, y + th / 2)
+        cr.line_to(x + tw - tile_r, y + th / 2); cr.stroke()
+        # Tile edge highlight
+        cr.set_source_rgba(tile_bg[0] + 0.12, tile_bg[1] + 0.12, tile_bg[2] + 0.12, 0.55)
+        cr.set_line_width(max(0.5, th * 0.012))
+        self._rounded_rect(cr, x, y, tw, th, tile_r); cr.stroke()
+
+    def _text_size(self, cr, text, size, font=None):
         layout = PangoCairo.create_layout(cr)
         layout.set_text(text, -1)
-        layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {size}'))
+        layout.set_font_description(Pango.FontDescription(f'{font or self.digital_font} {size}'))
         return layout.get_pixel_size()
 
-    def _fit_font_size(self, cr, text, max_width):
+    def _fit_font_size(self, cr, text, max_width, font=None):
+        f = font or self.digital_font
         for size in range(72, 6, -1):
             layout = PangoCairo.create_layout(cr)
             layout.set_text(text, -1)
-            layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {size}'))
+            layout.set_font_description(Pango.FontDescription(f'{f} {size}'))
             lw, _ = layout.get_pixel_size()
             if lw <= max_width: return size
         return 7
 
-    def _draw_text(self, cr, x, y, text, size, rgb, alpha=1.0, anchor='top'):
+    def _draw_text(self, cr, x, y, text, size, rgb, alpha=1.0, anchor='top', font=None):
         layout = PangoCairo.create_layout(cr)
         layout.set_text(text, -1)
-        layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {size}'))
+        layout.set_font_description(Pango.FontDescription(f'{font or self.digital_font} {size}'))
         lw, lh = layout.get_pixel_size()
         ty = y if anchor == 'top' else y - lh / 2
         cr.move_to(x - lw / 2, ty)
@@ -1272,9 +1611,10 @@ class ClockWindow(Gtk.Window):
 
 class ClockManager:
     def __init__(self):
-        shared             = load_state()
-        self.sync          = bool(shared.get('sync_settings', True))
-        self.click_through = bool(shared.get('click_through', False))
+        shared               = load_state()
+        self.sync            = bool(shared.get('sync_settings',   True))
+        self.click_through   = bool(shared.get('click_through',   False))
+        self.show_monitor_id = bool(shared.get('show_monitor_id', False))
         self.windows       = []
         self._active_alert = None
 
@@ -1340,8 +1680,8 @@ class ClockManager:
         self.tray.set_from_pixbuf(self._make_tray_pixbuf())
         self._update_tray_tooltip()
         self.tray.set_visible(True)
-        self.tray.connect('activate',   self._tray_click)
-        self.tray.connect('popup-menu', self._tray_menu)
+        self.tray.connect('activate',   self._tray_left_click)
+        self.tray.connect('popup-menu', self._tray_right_click)
 
     def _update_tray_tooltip(self):
         self.tray.set_tooltip_text(
@@ -1399,17 +1739,39 @@ class ClockManager:
         self.tray.set_from_pixbuf(self._make_tray_pixbuf())
         self._update_tray_tooltip()
 
-    def _tray_click(self, icon):
-        any_visible = any(w.get_visible() for w in self.windows)
+    def set_show_monitor_id(self, enabled):
+        self.show_monitor_id = enabled
+        shared = load_state()
+        shared['show_monitor_id'] = enabled
+        save_state(shared)
         for w in self.windows:
-            if any_visible:
-                if w.window_mode != 'hidden':
-                    w.set_window_mode('hidden')
-            else:
-                if w.window_mode == 'hidden':
-                    w.set_window_mode('normal')
+            w.queue_draw()
 
-    def _tray_menu(self, icon, button, time):
+    def _tray_left_click(self, icon):
+        self._show_main_menu(0, Gtk.get_current_event_time())
+
+    def _tray_right_click(self, icon, button, time):
+        menu = Gtk.Menu()
+        about_item = Gtk.MenuItem(label='About')
+        about_item.connect('activate', self._show_about)
+        menu.append(about_item)
+        menu.append(Gtk.SeparatorMenuItem())
+        exit_item = Gtk.MenuItem(label='Exit')
+        exit_item.connect('activate', lambda _: self._quit())
+        menu.append(exit_item)
+        menu.show_all()
+        menu.popup(None, None, None, None, button, time)
+
+    def _show_about(self, _):
+        dlg = Gtk.MessageDialog(
+            parent=None, flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text='Clock')
+        dlg.format_secondary_text('Desktop clock for Linux\nPython + GTK3')
+        dlg.run(); dlg.destroy()
+
+    def _show_main_menu(self, button, time):
         menu = Gtk.Menu()
         display     = Gdk.Display.get_default()
         primary_mon = display.get_primary_monitor()
@@ -1526,6 +1888,11 @@ class ClockManager:
         ct_item.set_active(self.click_through)
         ct_item.connect('activate', lambda i: self.set_click_through(i.get_active()))
         menu.append(ct_item)
+
+        mid_item = Gtk.CheckMenuItem(label='Show monitor IDs')
+        mid_item.set_active(self.show_monitor_id)
+        mid_item.connect('activate', lambda i: self.set_show_monitor_id(i.get_active()))
+        menu.append(mid_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
