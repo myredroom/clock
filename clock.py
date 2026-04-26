@@ -10,9 +10,6 @@ import json
 import os
 import signal
 import warnings
-# Gtk.StatusIcon is deprecated but replacing it with AppIndicator requires a
-# significant restructure of the tray event model.  Suppress those warnings
-# until we do that migration; all other deprecations are fixed below.
 warnings.filterwarnings('ignore', message='.*StatusIcon.*', category=DeprecationWarning)
 import uuid
 import wave
@@ -1903,9 +1900,13 @@ class ClockManager:
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        quit_item = Gtk.MenuItem(label='Quit')
-        quit_item.connect('activate', lambda _: self._quit())
-        menu.append(quit_item)
+        # On X11, menus can't be dismissed by clicking the tray icon (grab limitation),
+        # so expose Exit here. On Wayland this isn't needed — toggle works natively.
+        if not os.environ.get('WAYLAND_DISPLAY'):
+            exit_item = Gtk.MenuItem(label='Exit')
+            exit_item.connect('activate', lambda _: self._quit())
+            menu.append(exit_item)
+            menu.append(Gtk.SeparatorMenuItem())
 
         menu.show_all()
         menu.popup(None, None, None, None, button, time)
