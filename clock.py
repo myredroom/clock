@@ -1111,28 +1111,44 @@ class ClockWindow(Gtk.Window):
         hr, hg, hb  = t['hour_marks']
         mr, mg, mb  = t['min_marks']
 
-        label_r       = r * 0.75
-        font_size_lbl = 6
+        label_r        = r * 0.75
+        font_size_lbl  = 6
+        font_size_card = 6
         lw_3 = lh_3 = lw_4 = lh_4 = lw_6 = lh_6 = 10
         if self.marker_style in ('Numbers', 'Roman'):
-            labels  = ROMAN if self.marker_style == 'Roman' else [str(i) for i in range(1, 13)]
-            widest  = 'VIII' if self.marker_style == 'Roman' else '12'
-            lbl_3   = 'III'  if self.marker_style == 'Roman' else '3'
-            lbl_4   = 'IV'   if self.marker_style == 'Roman' else '4'
-            lbl_6   = 'VI'   if self.marker_style == 'Roman' else '6'
+            labels     = ROMAN if self.marker_style == 'Roman' else [str(i) for i in range(1, 13)]
+            widest     = 'VIII' if self.marker_style == 'Roman' else '11'
+            card_wide  = 'XII'  if self.marker_style == 'Roman' else '12'
+            lbl_3      = 'III'  if self.marker_style == 'Roman' else '3'
+            lbl_4      = 'IV'   if self.marker_style == 'Roman' else '4'
+            lbl_6      = 'VI'   if self.marker_style == 'Roman' else '6'
+            num_blip_r = outer_mark - min_len * 1.80
             for fs in range(int(r * 0.11), 4, -1):
+                fs_card = max(4, int(round(fs * 1.10)))
+                fs_norm = max(4, int(round(fs * 0.78)))
                 tmp = PangoCairo.create_layout(cr)
                 tmp.set_text(widest, -1)
-                tmp.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs}'))
-                tlw, tlh = tmp.get_pixel_size()
-                max_half = max(tlw, tlh) / 2
-                lr       = r - 10 - max_half
+                tmp.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs_norm}'))
+                tlw_n, tlh_n = tmp.get_pixel_size()
+                tmp.set_text(card_wide, -1)
+                tmp.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs_card}'))
+                tlw_c, tlh_c = tmp.get_pixel_size()
+                max_half = max(tlw_n, tlh_n, tlw_c, tlh_c) / 2
+                lr       = num_blip_r - max(4, r * 0.03) - max_half
                 arc_gap  = 2 * math.pi * lr / 12
-                if lr > stud_r + 4 and arc_gap >= tlw * 1.10:
-                    font_size_lbl = fs; label_r = lr
-                    tmp.set_text(lbl_3, -1); lw_3, lh_3 = tmp.get_pixel_size()
-                    tmp.set_text(lbl_4, -1); lw_4, lh_4 = tmp.get_pixel_size()
-                    tmp.set_text(lbl_6, -1); lw_6, lh_6 = tmp.get_pixel_size()
+                if lr > stud_r + 4 and arc_gap >= max(tlw_n, tlw_c) * 1.10:
+                    font_size_lbl  = fs_norm
+                    font_size_card = fs_card
+                    label_r = lr
+                    tmp.set_text(lbl_3, -1)
+                    tmp.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs_card}'))
+                    lw_3, lh_3 = tmp.get_pixel_size()
+                    tmp.set_text(lbl_4, -1)
+                    tmp.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs_norm}'))
+                    lw_4, lh_4 = tmp.get_pixel_size()
+                    tmp.set_text(lbl_6, -1)
+                    tmp.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs_card}'))
+                    lw_6, lh_6 = tmp.get_pixel_size()
                     break
 
         sin_4 = math.sin((4 / 6.0) * math.pi)
@@ -1168,15 +1184,15 @@ class ClockWindow(Gtk.Window):
         _CARDINAL = {3, 6, 9, 12}
         for i in range(1, 13):
             angle = (i / 6.0) * math.pi
-            is_marks   = self.marker_style == 'Marks'
-            is_cardinal = is_marks and (i in _CARDINAL)
+            is_marks    = self.marker_style == 'Marks'
+            is_cardinal = (i in _CARDINAL)
             if is_marks:
                 this_hr_len = hr_len * (1.30 if is_cardinal else 1.0)
                 inner = outer_mark - this_hr_len
                 width = hr_w
                 b_r, b_g, b_b = hr, hg, hb
             else:
-                inner = min_r
+                inner = outer_mark - min_len * 1.80
                 width = max(1.5, r * 0.016)
                 b_r, b_g, b_b = mr * 0.60, mg * 0.60, mb * 0.60
             if self.manager.show_monitor_id and i == mid <= 12:
@@ -1199,7 +1215,7 @@ class ClockWindow(Gtk.Window):
                 cr.set_line_width(width); cr.stroke()
 
             if is_cardinal:
-                sep = max(width * 3.5, r * 0.022)
+                sep = max(width * 2.0, r * 0.013)
                 sx  = math.sin(perp) * sep / 2; sy = -math.cos(perp) * sep / 2
                 _mark(-sx, -sy); _mark(sx, sy)
             else:
@@ -1214,7 +1230,8 @@ class ClockWindow(Gtk.Window):
                 ly     = cy - label_r * math.cos(angle)
                 layout = PangoCairo.create_layout(cr)
                 layout.set_text(labels[i - 1], -1)
-                layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {font_size_lbl}'))
+                fs = font_size_card if i in _CARDINAL else font_size_lbl
+                layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {fs}'))
                 lw, lh = layout.get_pixel_size()
                 cr.move_to(lx - lw / 2, ly - lh / 2)
                 if self.manager.show_monitor_id and i == mid <= 12:
