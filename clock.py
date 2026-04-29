@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 
 STATE_FILE  = os.path.expanduser('~/clock/state.json')
 ALARMS_FILE = os.path.expanduser('~/clock/alarms.json')
+TIMERS_FILE = os.path.expanduser('~/clock/timers.json')
 
 # ─── State persistence ────────────────────────────────────────────────
 
@@ -54,6 +55,45 @@ def save_monitor_state(geom, data):
             json.dump(data, f)
     except Exception:
         pass
+
+# ─── Timer persistence ────────────────────────────────────────────────
+
+def save_timers(timers):
+    try:
+        data = [dict(t, saved_at=datetime.now().isoformat()) for t in timers
+                if t['state'] in ('running', 'paused')]
+        with open(TIMERS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def load_timers_on_start():
+    """Load persisted timers, adjusting remaining time for elapsed. Returns list of timers."""
+    try:
+        with open(TIMERS_FILE) as f:
+            data = json.load(f)
+        os.remove(TIMERS_FILE)
+    except Exception:
+        return []
+    now = datetime.now()
+    restored = []
+    for t in data:
+        try:
+            saved_at = datetime.fromisoformat(t.get('saved_at', now.isoformat()))
+            elapsed  = (now - saved_at).total_seconds()
+            if t['state'] == 'running':
+                t['remaining'] = t['remaining'] - elapsed
+            if t['remaining'] <= 0:
+                # Fire immediately but flag for auto-dismiss (user is not present)
+                t['remaining'] = 0
+                t['state']     = 'completed'
+                t['completed_at'] = now.timestamp()
+                t['snooze_count'] = 3   # forces auto-dismiss after 2 min
+            t.pop('saved_at', None)
+            restored.append(t)
+        except Exception:
+            pass
+    return restored
 
 # ─── Alarm persistence ────────────────────────────────────────────────
 
@@ -162,7 +202,7 @@ def play_tone(tone_num):
 
 # ─── RTC wake scheduling ──────────────────────────────────────────────
 
-def schedule_rtc_wake(alarms):
+def schedule_rtc_wake(alarms, timers=None):
     if not shutil.which('rtcwake'):
         return
     now      = datetime.now()
@@ -177,6 +217,12 @@ def schedule_rtc_wake(alarms):
         if a.get('repeat') == 'Weekdays':
             while target.weekday() >= 5:
                 target += timedelta(days=1)
+        if earliest is None or target < earliest:
+            earliest = target
+    # Include running timers
+    for tmr in (timers or []):
+        if tmr['state'] != 'running': continue
+        target = now + timedelta(seconds=max(1, tmr['remaining']))
         if earliest is None or target < earliest:
             earliest = target
     if earliest:
@@ -194,7 +240,7 @@ class AlertDialog(Gtk.Window):
         self._proc      = None
         self._expire_id = None
 
-        self.set_title('Alarm')
+        self.set_decorated(False)
         self.set_keep_above(True)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_resizable(False)
@@ -217,12 +263,12 @@ class AlertDialog(Gtk.Window):
         box.pack_start(btn, False, False, 0)
         self.add(box)
 
+        self.set_position(Gtk.WindowPosition.NONE)
         if alarm['style'] in ('sound', 'both'):
             self._start_sound()
         if alarm['dismiss'] == 'auto':
             secs = alarm.get('expire_mins', 5) * 60
             self._expire_id = GLib.timeout_add_seconds(secs, self._dismiss, None)
-        self.show_all()
 
     def _start_sound(self):
         self._proc = play_tone(self.alarm['tone'])
@@ -254,12 +300,15 @@ class AlarmEditDialog(Gtk.Dialog):
     def __init__(self, parent, alarm=None):
         super().__init__(title='Edit Alarm' if alarm else 'New Alarm',
                          transient_for=parent, modal=True)
+        self.set_decorated(False)
         self.alarm = alarm.copy() if alarm else new_alarm()
-        self.add_button('Cancel', Gtk.ResponseType.CANCEL)
-        self.add_button('Save',   Gtk.ResponseType.OK)
+        self.add_button('Close', Gtk.ResponseType.CANCEL)
+        self.add_button('Save',  Gtk.ResponseType.OK)
+        title = 'Edit Alarm' if alarm else 'New Alarm'
+        self.get_content_area().pack_start(_make_titlebar(self, title), False, False, 0)
 
         grid = Gtk.Grid(row_spacing=10, column_spacing=12)
-        grid.set_margin_top(16); grid.set_margin_bottom(16)
+        grid.set_margin_top(8); grid.set_margin_bottom(16)
         grid.set_margin_start(16); grid.set_margin_end(16)
         row = 0
 
@@ -337,6 +386,11 @@ class AlarmEditDialog(Gtk.Dialog):
 
         self.get_content_area().add(grid)
         self.show_all()
+        btn = self.get_widget_for_response(Gtk.ResponseType.CANCEL)
+        if btn:
+            css = Gtk.CssProvider()
+            css.load_from_data(b'button { background: #c0392b; color: white; }')
+            btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def get_alarm(self):
         h = int(self.hour_spin.get_value())
@@ -354,19 +408,107 @@ class AlarmEditDialog(Gtk.Dialog):
         self.alarm['last_fired']  = None
         return self.alarm
 
+_panel_css = None
+
+def _setup_undecorated_window(win, outer_box):
+    """RGBA visual + transparent bg + rounded CSS corners for undecorated windows."""
+    global _panel_css
+    screen = win.get_screen()
+    visual = screen.get_rgba_visual()
+    if visual:
+        win.set_visual(visual)
+    win.set_app_paintable(True)
+
+    def _draw_transparent(widget, cr):
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        return False
+
+    win.connect('draw', _draw_transparent)
+
+    if _panel_css is None:
+        _panel_css = Gtk.CssProvider()
+        _panel_css.load_from_data(b'''
+            .clock-panel {
+                background-color: @theme_bg_color;
+                border-radius: 10px;
+                border: 1px solid alpha(@borders, 0.55);
+            }
+        ''')
+        Gtk.StyleContext.add_provider_for_screen(
+            screen, _panel_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    outer_box.get_style_context().add_class('clock-panel')
+
+def _make_titlebar(win, title):
+    """Draggable title bar for undecorated windows — title only, no close button."""
+    bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    bar.set_margin_start(10); bar.set_margin_end(10)
+    bar.set_margin_top(6);    bar.set_margin_bottom(4)
+    lbl = Gtk.Label(xalign=0)
+    lbl.set_markup(f'<b>{GLib.markup_escape_text(title)}</b>')
+    bar.pack_start(lbl, True, True, 0)
+
+    drag_state = [None]   # [(offset_x, offset_y)] when dragging
+
+    def _on_press(w, e):
+        if e.button == 1:
+            wx, wy = win.get_position()
+            drag_state[0] = (int(e.x_root) - wx, int(e.y_root) - wy)
+        return False
+
+    def _on_motion(w, e):
+        if drag_state[0]:
+            ox, oy = drag_state[0]
+            win.move(int(e.x_root) - ox, int(e.y_root) - oy)
+        return False
+
+    def _on_release(w, e):
+        if e.button == 1:
+            drag_state[0] = None
+        return False
+
+    # Press only on title bar — motion/release on window so drag works outside bar
+    bar.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+    bar.connect('button-press-event', _on_press)
+    win.add_events(Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK)
+    win.connect('motion-notify-event',  _on_motion)
+    win.connect('button-release-event', _on_release)
+
+    sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    outer.pack_start(bar, False, False, 0)
+    outer.pack_start(sep, False, False, 0)
+    return outer
+
+def _red_close_button(label, callback):
+    """A red styled close/exit button."""
+    btn = Gtk.Button(label=label)
+    css = Gtk.CssProvider()
+    css.load_from_data(b'button { background: #c0392b; color: white; border-radius: 5px; }')
+    btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    btn.connect('clicked', lambda _: callback())
+    return btn
+
 # ─── Alarm manager window ─────────────────────────────────────────────
 
 class AlarmManagerWindow(Gtk.Window):
     def __init__(self, parent):
         super().__init__(title='Alarms')
         self.set_transient_for(parent)
+        self.set_decorated(False)
         self.set_default_size(460, 280)
         self.set_position(Gtk.WindowPosition.CENTER)
-        self.set_border_width(8)
+        self.set_border_width(0)
         self.alarms = load_alarms()
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        _setup_undecorated_window(self, vbox)
+        vbox.pack_start(_make_titlebar(self, 'Alarms'), False, False, 0)
         bar = Gtk.Box(spacing=6)
+        bar.set_margin_start(8); bar.set_margin_end(8)
         for label, cb in [('+ Add', self._add), ('Edit', self._edit), ('Delete', self._delete)]:
             btn = Gtk.Button(label=label); btn.connect('clicked', cb)
             bar.pack_start(btn, False, False, 0)
@@ -384,7 +526,13 @@ class AlarmManagerWindow(Gtk.Window):
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.add(self.tree); vbox.pack_start(scroll, True, True, 0)
-        self.add(vbox); self._refresh(); self.show_all()
+
+        close_row = Gtk.Box(spacing=6)
+        close_row.set_margin_start(8); close_row.set_margin_end(8); close_row.set_margin_bottom(8)
+        close_row.pack_end(_red_close_button('Close', self.destroy), False, False, 0)
+        vbox.pack_start(close_row, False, False, 0)
+
+        self.add(vbox); self._refresh()
 
     def _refresh(self):
         self.store.clear()
@@ -435,6 +583,333 @@ class AlarmManagerWindow(Gtk.Window):
             if a['id'] == aid:
                 a['enabled'] = not a['enabled']; self.store[it][7] = a['enabled']
                 save_alarms(self.alarms); schedule_rtc_wake(self.alarms); break
+
+# ─── Timer ────────────────────────────────────────────────────────────
+
+def new_timer(label='Timer', total_secs=60, tone=3, never_give_up=False, snooze_count=0):
+    return {
+        'id':            str(uuid.uuid4()),
+        'label':         label,
+        'total':         total_secs,
+        'remaining':     total_secs,
+        'state':         'running',
+        'tone':          tone,
+        'never_give_up': never_give_up,
+        'snooze_count':  snooze_count,
+        'completed_at':  None,
+    }
+
+def _fmt_secs(secs):
+    secs = max(0, int(secs))
+    h, r = divmod(secs, 3600)
+    m, s = divmod(r, 60)
+    if h: return f'{h}:{m:02d}:{s:02d}'
+    return f'{m:02d}:{s:02d}'
+
+class TimerAlertDialog(Gtk.Window):
+    _AUTO_SNOOZE_SECS = 120   # wait before auto-snoozing
+    _AUTO_SNOOZE_MAX  = 3     # give up after this many auto-snoozes
+
+    def __init__(self, timer, on_dismiss, on_snooze=None):
+        super().__init__()
+        self._timer     = timer
+        self.on_dismiss = on_dismiss
+        self.on_snooze  = on_snooze
+        self._proc      = None
+        self._auto_id   = None
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_resizable(False)
+        self.set_border_width(24)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        icon = Gtk.Label(); icon.set_markup('<span font="32">⏳</span>')
+        box.pack_start(icon, False, False, 0)
+        lbl = Gtk.Label()
+        lbl.set_markup(f'<span size="x-large" weight="bold">'
+                       f'{GLib.markup_escape_text(timer["label"])}</span>')
+        box.pack_start(lbl, False, False, 0)
+        box.pack_start(Gtk.Label(label='Timer complete!'), False, False, 4)
+
+        snooze_box = Gtk.Box(spacing=6)
+        snooze_box.pack_start(Gtk.Label(label='Snooze:'), False, False, 0)
+        self._snooze_spin = Gtk.SpinButton()
+        self._snooze_spin.set_adjustment(
+            Gtk.Adjustment(value=5, lower=1, upper=60, step_increment=1))
+        self._snooze_spin.set_width_chars(3)
+        snooze_box.pack_start(self._snooze_spin, False, False, 0)
+        snooze_box.pack_start(Gtk.Label(label='min'), False, False, 0)
+        snooze_btn = Gtk.Button(label='Snooze')
+        snooze_btn.set_size_request(90, 36)
+        snooze_btn.connect('clicked', self._snooze)
+        snooze_box.pack_start(snooze_btn, False, False, 0)
+        box.pack_start(snooze_box, False, False, 0)
+
+        dismiss_btn = Gtk.Button(label='Dismiss')
+        dismiss_btn.set_size_request(120, 36)
+        dismiss_btn.connect('clicked', self._dismiss)
+        box.pack_start(dismiss_btn, False, False, 0)
+        self.add(box)
+        self._proc = play_tone(timer['tone'])
+        self._tone = timer['tone']
+        self.set_position(Gtk.WindowPosition.NONE)
+        GLib.timeout_add(400, self._loop_sound)
+        # Auto-snooze unless never_give_up
+        if not timer.get('never_give_up', False):
+            self._auto_id = GLib.timeout_add_seconds(
+                self._AUTO_SNOOZE_SECS, self._auto_snooze)
+
+    def _loop_sound(self):
+        if not self.get_visible(): return False
+        if self._proc and self._proc.poll() is not None:
+            self._proc = play_tone(self._tone)
+        return True
+
+    def _stop_sound(self):
+        if self._proc:
+            try: self._proc.terminate()
+            except Exception: pass
+        if self._auto_id:
+            GLib.source_remove(self._auto_id)
+            self._auto_id = None
+
+    def _auto_snooze(self):
+        count = self._timer.get('snooze_count', 0)
+        self._stop_sound()
+        self.hide()
+        if count < self._AUTO_SNOOZE_MAX and self.on_snooze:
+            self.on_snooze(self._AUTO_SNOOZE_SECS, count + 1)
+        return False
+
+    def _snooze(self, *_):
+        self._stop_sound()
+        secs = int(self._snooze_spin.get_value()) * 60
+        self.hide()
+        if self.on_snooze: self.on_snooze(secs, 0)
+        return False
+
+    def _dismiss(self, *_):
+        self._stop_sound()
+        self.hide()
+        self.on_dismiss()
+        return False
+
+class TimerEditDialog(Gtk.Dialog):
+    def __init__(self, parent):
+        super().__init__(title='New Timer', transient_for=parent, modal=True)
+        self.set_decorated(False)
+        self.add_button('Close', Gtk.ResponseType.CANCEL)
+        self.add_button('Start', Gtk.ResponseType.OK)
+        self.get_content_area().pack_start(_make_titlebar(self, 'New Timer'), False, False, 0)
+        grid = Gtk.Grid(row_spacing=10, column_spacing=12)
+        grid.set_margin_top(8); grid.set_margin_bottom(16)
+        grid.set_margin_start(16); grid.set_margin_end(16)
+        row = 0
+        grid.attach(Gtk.Label(label='Label:', xalign=0), 0, row, 1, 1)
+        self.label_entry = Gtk.Entry()
+        self.label_entry.set_text('Timer')
+        self.label_entry.set_hexpand(True)
+        grid.attach(self.label_entry, 1, row, 3, 1); row += 1
+        grid.attach(Gtk.Label(label='Duration:', xalign=0), 0, row, 1, 1)
+        dur_box = Gtk.Box(spacing=4)
+        self.hour_spin = Gtk.SpinButton()
+        self.hour_spin.set_adjustment(Gtk.Adjustment(value=0, lower=0, upper=23, step_increment=1))
+        self.hour_spin.set_wrap(True); self.hour_spin.set_width_chars(2)
+        self.min_spin = Gtk.SpinButton()
+        self.min_spin.set_adjustment(Gtk.Adjustment(value=0, lower=0, upper=59, step_increment=1))
+        self.min_spin.set_wrap(True); self.min_spin.set_width_chars(2)
+        self.sec_spin = Gtk.SpinButton()
+        self.sec_spin.set_adjustment(Gtk.Adjustment(value=0, lower=0, upper=59, step_increment=1))
+        self.sec_spin.set_wrap(True); self.sec_spin.set_width_chars(2)
+        for spin, lbl in [(self.hour_spin,'h'),(self.min_spin,'m'),(self.sec_spin,'s')]:
+            dur_box.pack_start(spin, False, False, 0)
+            dur_box.pack_start(Gtk.Label(label=lbl), False, False, 2)
+        grid.attach(dur_box, 1, row, 3, 1); row += 1
+        grid.attach(Gtk.Label(label='Tone:', xalign=0), 0, row, 1, 1)
+        tone_box = Gtk.Box(spacing=8)
+        self._tone_combo = Gtk.ComboBoxText()
+        for name in TONE_NAMES: self._tone_combo.append_text(name)
+        self._tone_combo.set_active(2)
+        preview_btn = Gtk.Button(label='▶ Preview')
+        preview_btn.connect('clicked', lambda _: play_tone(self._tone_combo.get_active() + 1))
+        tone_box.pack_start(self._tone_combo, False, False, 0)
+        tone_box.pack_start(preview_btn, False, False, 0)
+        grid.attach(tone_box, 1, row, 3, 1); row += 1
+
+        self._never_give_up = Gtk.CheckButton(label='Never give up (sound until dismissed)')
+        grid.attach(self._never_give_up, 0, row, 4, 1)
+
+        self.get_content_area().add(grid)
+        self.show_all()
+        btn = self.get_widget_for_response(Gtk.ResponseType.CANCEL)
+        if btn:
+            css = Gtk.CssProvider()
+            css.load_from_data(b'button { background: #c0392b; color: white; }')
+            btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def get_timer(self):
+        h = int(self.hour_spin.get_value())
+        m = int(self.min_spin.get_value())
+        s = int(self.sec_spin.get_value())
+        total = h * 3600 + m * 60 + s
+        if total <= 0: total = 60
+        return new_timer(
+            label=self.label_entry.get_text().strip() or 'Timer',
+            total_secs=total,
+            tone=self._tone_combo.get_active() + 1,
+            never_give_up=self._never_give_up.get_active(),
+        )
+
+class TimerManagerWindow(Gtk.Window):
+    def __init__(self, parent, manager):
+        super().__init__(title='Timers')
+        self.set_transient_for(parent)
+        self.set_decorated(False)
+        self.set_default_size(480, 240)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_border_width(0)
+        self.manager = manager
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        _setup_undecorated_window(self, vbox)
+        vbox.pack_start(_make_titlebar(self, 'Timers'), False, False, 0)
+        bar = Gtk.Box(spacing=6)
+        bar.set_margin_start(8); bar.set_margin_end(8)
+        for lbl, cb in [('+ Add', self._add), ('Pause/Resume', self._pause_resume), ('Delete', self._cancel)]:
+            b = Gtk.Button(label=lbl); b.connect('clicked', cb)
+            bar.pack_start(b, False, False, 0)
+        vbox.pack_start(bar, False, False, 0)
+        self.store = Gtk.ListStore(str, str, str, str, str)
+        self.tree = Gtk.TreeView(model=self.store)
+        for title, idx in [('Label',1),('Duration',2),('Remaining',3),('State',4)]:
+            self.tree.append_column(Gtk.TreeViewColumn(title, Gtk.CellRendererText(), text=idx))
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(self.tree); vbox.pack_start(scroll, True, True, 0)
+
+        close_row = Gtk.Box(spacing=6)
+        close_row.set_margin_start(8); close_row.set_margin_end(8); close_row.set_margin_bottom(8)
+        close_row.pack_end(_red_close_button('Close', self.destroy), False, False, 0)
+        vbox.pack_start(close_row, False, False, 0)
+
+        self.add(vbox); self._refresh()
+        self._tick_id = GLib.timeout_add(1000, self._on_tick)
+        self.connect('destroy', lambda _: GLib.source_remove(self._tick_id))
+
+    def _fmt_total(self, secs):
+        h, r = divmod(secs, 3600)
+        m, s = divmod(r, 60)
+        if h: return f'{h}h {m:02d}m {s:02d}s'
+        if m: return f'{m}m {s:02d}s'
+        return f'{s}s'
+
+    def _refresh(self):
+        model, it = self.tree.get_selection().get_selected()
+        selected_id = model[it][0] if it else None
+        self.store.clear()
+        for t in self.manager.timers:
+            self.store.append([t['id'], t['label'],
+                               self._fmt_total(t['total']),
+                               _fmt_secs(t['remaining']),
+                               t['state'].capitalize()])
+        if selected_id:
+            for row in self.store:
+                if row[0] == selected_id:
+                    self.tree.get_selection().select_iter(row.iter); break
+
+    def _selected(self):
+        model, it = self.tree.get_selection().get_selected()
+        if it is None: return None, None
+        tid = model[it][0]
+        for i, t in enumerate(self.manager.timers):
+            if t['id'] == tid: return i, t
+        return None, None
+
+    def _add(self, _):
+        dlg = TimerEditDialog(self)
+        if dlg.run() == Gtk.ResponseType.OK:
+            self.manager.timers.append(dlg.get_timer())
+            self._refresh()
+        dlg.destroy()
+
+    def _pause_resume(self, _):
+        _, t = self._selected()
+        if t is None or t['state'] == 'completed': return
+        t['state'] = 'paused' if t['state'] == 'running' else 'running'
+        self._refresh()
+
+    def _cancel(self, _):
+        idx, _ = self._selected()
+        if idx is None: return
+        self.manager.timers.pop(idx)
+        self._refresh()
+
+    def _on_tick(self):
+        if self.get_visible(): self._refresh()
+        return True
+
+class TimerHoverOverlay(Gtk.Window):
+    _css_loaded = False
+
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual: self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        if not TimerHoverOverlay._css_loaded:
+            css = b'''
+            .t-overlay { background-color: rgba(12,12,22,0.93);
+                         border-radius: 6px;
+                         border: 1px solid rgba(255,255,255,0.15); }
+            .t-row     { color: #c8daf0; font-size: 11pt;
+                         padding-top: 1px; padding-bottom: 1px;
+                         padding-left: 10px; padding-right: 10px; }
+            .t-done    { color: #78e878; }
+            .t-paused  { color: #999999; }
+            '''
+            p = Gtk.CssProvider(); p.load_from_data(css)
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            TimerHoverOverlay._css_loaded = True
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.get_style_context().add_class('t-overlay')
+        self._box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._box.set_margin_top(6); self._box.set_margin_bottom(6)
+        outer.add(self._box)
+        self.add(outer)
+
+    def update(self, timers, clock_x, clock_y, clock_w, clock_h, screen_h):
+        now_ts = datetime.now().timestamp()
+        active = [t for t in timers if t['state'] != 'completed' or
+                  (t['completed_at'] and now_ts - t['completed_at'] < 5)]
+        for child in self._box.get_children():
+            self._box.remove(child)
+        if not active:
+            self.hide(); return
+        for t in active:
+            if t['state'] == 'completed':
+                text, css = f'✓  {t["label"]}', 't-done'
+            elif t['state'] == 'paused':
+                text, css = f'⏸  {t["label"]}  {_fmt_secs(t["remaining"])}', 't-paused'
+            else:
+                text, css = f'⏱  {t["label"]}  {_fmt_secs(t["remaining"])}', 't-row'
+            lbl = Gtk.Label(label=text, xalign=0)
+            lbl.get_style_context().add_class('t-row')
+            if css != 't-row': lbl.get_style_context().add_class(css)
+            self._box.pack_start(lbl, False, False, 0)
+        self._box.show_all(); self.show_all()
+        self.move(clock_x, clock_y + clock_h + 4)
+        GLib.idle_add(self._reposition, clock_x, clock_y, clock_h, screen_h)
+
+    def _reposition(self, clock_x, clock_y, clock_h, screen_h):
+        _, h = self.get_size()
+        if clock_y + clock_h + 4 + h > screen_h:
+            self.move(clock_x, clock_y - h - 4)
+        return False
 
 # ─── Clock themes / sizes ─────────────────────────────────────────────
 
@@ -552,6 +1027,7 @@ class ClockWindow(Gtk.Window):
         self.set_title(f'Clock-{self.monitor_idx}')
         self.set_decorated(False)
         self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_app_paintable(True)
@@ -579,11 +1055,16 @@ class ClockWindow(Gtk.Window):
         self.da.add_events(
             Gdk.EventMask.BUTTON_PRESS_MASK |
             Gdk.EventMask.BUTTON_RELEASE_MASK |
-            Gdk.EventMask.POINTER_MOTION_MASK)
+            Gdk.EventMask.POINTER_MOTION_MASK |
+            Gdk.EventMask.ENTER_NOTIFY_MASK |
+            Gdk.EventMask.LEAVE_NOTIFY_MASK)
         self.da.connect('button-press-event',   self._on_button_press)
         self.da.connect('button-release-event', self._on_button_release)
         self.da.connect('motion-notify-event',  self._on_motion)
+        self.da.connect('enter-notify-event',   self._on_hover_enter)
+        self.da.connect('leave-notify-event',   self._on_hover_leave)
         self.connect('key-press-event', self._on_key_press)
+        self._hover_overlay = TimerHoverOverlay()
 
         child = self.get_child()
         if child: self.remove(child)
@@ -630,11 +1111,38 @@ class ClockWindow(Gtk.Window):
 
     # ── Input handling ────────────────────────────────────────────────
 
+    def _on_hover_enter(self, widget, event):
+        self._update_hover_overlay()
+
+    def _on_hover_leave(self, widget, event):
+        if event.detail != Gdk.NotifyType.INFERIOR:
+            self._hover_overlay.hide()
+
+    def _update_hover_overlay(self):
+        active = [t for t in self.manager.timers if t['state'] != 'completed' or
+                  (t['completed_at'] and
+                   datetime.now().timestamp() - t['completed_at'] < 5)]
+        if not active:
+            self._hover_overlay.hide(); return
+        x, y = self.get_position()
+        w, h = self.get_size()
+        screen_h = self.monitor_geom.y + self.monitor_geom.height
+        self._hover_overlay.update(self.manager.timers, x, y, w, h, screen_h)
+
     def _on_key_press(self, widget, event):
         pass
 
     def _on_button_press(self, widget, event):
         if event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS and event.button == 1:
+            ex, ey = event.x, event.y
+            if hasattr(self, '_bell_draw_pos'):
+                bx, by = self._bell_draw_pos
+                if math.hypot(ex - bx, ey - by) < self._bell_hit_r:
+                    self.manager.open_alarm_manager(self); return
+            if hasattr(self, '_hg_draw_pos'):
+                hx, hy = self._hg_draw_pos
+                if math.hypot(ex - hx, ey - hy) < self._hg_hit_r:
+                    self.manager.open_timer_manager(self); return
             return
         if event.button == 1 and self.window_mode == 'normal':
             wx, wy = self.get_position()
@@ -672,8 +1180,12 @@ class ClockWindow(Gtk.Window):
         menu.append(win_item)
 
         alarms_item = Gtk.MenuItem(label='Alarms…')
-        alarms_item.connect('activate', lambda _: AlarmManagerWindow(self))
+        alarms_item.connect('activate', lambda _: self.manager.open_alarm_manager(self))
         menu.append(alarms_item)
+
+        timers_item = Gtk.MenuItem(label='Timers…')
+        timers_item.connect('activate', lambda _: self.manager.open_timer_manager(self))
+        menu.append(timers_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -923,7 +1435,7 @@ class ClockWindow(Gtk.Window):
     def _7seg_content_size(self):
         dh, dw, cw, igap, total_w = self._7seg_layout()
         pad_x = max(4.0, total_w * 0.04)
-        pad_y = max(4.0, dh * 0.18)
+        pad_y = max(22, dh * 0.30)
         box_h = dh + pad_y * 2
         if self.show_date:
             box_h += max(6, dh * 0.28) + igap * 2
@@ -946,10 +1458,11 @@ class ClockWindow(Gtk.Window):
 
     def _split_content_size(self):
         th, tw, t_gap, total_w = self._split_layout()
-        pad_x = max(4.0, tw * 0.30)
-        pad_y = max(4.0, th * 0.15)
+        pad_x      = max(4.0, tw * 0.30)
+        pad_y      = max(8,   th * 0.12)
+        icon_strip = max(28,  th * 0.40)
         box_w = total_w + pad_x * 2
-        box_h = th + pad_y * 2
+        box_h = th + pad_y * 2 + icon_strip
         if self.show_date:
             th2    = max(6, th * 0.50)
             tw2    = th2 * 0.70
@@ -1088,6 +1601,43 @@ class ClockWindow(Gtk.Window):
             PangoCairo.show_layout(cr, layout)
         cr.restore()
 
+    def _draw_hourglass(self, cr, x, y, size, rgba, count=0):
+        cr.save()
+        cr.translate(x, y)
+        col_r, col_g, col_b, col_a = rgba
+        s   = size / 2.0
+        w   = s * 0.56    # half-width at widest point
+        p   = s * 0.09    # pinch half-width
+        tv  = s * 0.82    # body top/bottom y (leaves room for cap)
+        bx  = s * 0.30    # bezier bow — controls outward bulge
+        cap = s - tv      # cap height
+        # Hourglass body: bezier curves giving smooth "8" outline
+        cr.move_to(-w, -tv)
+        cr.line_to(w, -tv)                                          # flat top edge
+        cr.curve_to( w + bx, -tv * 0.6,  p + bx, -tv * 0.05, p, 0)  # right upper
+        cr.curve_to( p + bx,  tv * 0.05, w + bx,  tv * 0.6, w, tv)  # right lower
+        cr.line_to(-w, tv)                                          # flat bottom edge
+        cr.curve_to(-w - bx,  tv * 0.6, -p - bx,  tv * 0.05, -p, 0) # left lower
+        cr.curve_to(-p - bx, -tv * 0.05,-w - bx, -tv * 0.6, -w,-tv) # left upper
+        cr.close_path()
+        cr.set_source_rgba(col_r, col_g, col_b, col_a); cr.fill_preserve()
+        cr.set_source_rgba(col_r * 0.50, col_g * 0.50, col_b * 0.50, col_a * 0.85)
+        cr.set_line_width(max(0.7, size * 0.035)); cr.stroke()
+        # Top and bottom caps (flat bars extending slightly wider than body)
+        for yy in (-s, s - cap * 2):
+            cr.rectangle(-w * 1.18, yy, w * 2.36, cap * 2)
+            cr.set_source_rgba(col_r * 0.82, col_g * 0.82, col_b * 0.82, col_a); cr.fill()
+        if count > 0:
+            layout = PangoCairo.create_layout(cr)
+            font_size = max(6, int(size * 0.38))
+            layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {font_size}'))
+            layout.set_text(str(count), -1)
+            lw2, lh = layout.get_pixel_size()
+            cr.move_to(-lw2 / 2, -lh / 2)
+            cr.set_source_rgba(1, 1, 1, 1)
+            PangoCairo.show_layout(cr, layout)
+        cr.restore()
+
     def _draw_analog(self, cr, w, h, now, digital_inset=False):
         cx, cy = w / 2.0, h / 2.0
         r  = min(cx, cy) - 8
@@ -1163,7 +1713,7 @@ class ClockWindow(Gtk.Window):
 
         # Face
         face = t['face']
-        face_alpha = 1.0 if self.opacity_level >= 1.0 else face[3]
+        face_alpha = face[3] if (t is THEMES['Clear']) else (1.0 if self.opacity_level >= 1.0 else face[3])
         cr.arc(cx, cy, r, 0, 2 * math.pi)
         cr.set_source_rgba(face[0], face[1], face[2], face_alpha); cr.fill()
         cr.arc(cx, cy, r, 0, 2 * math.pi)
@@ -1300,12 +1850,30 @@ class ClockWindow(Gtk.Window):
         cr.set_source_rgba(0.1, 0.1, 0.1, 0.6)
         cr.set_line_width(max(0.5, r * 0.006)); cr.stroke()
 
-        # Alarm bell
+        # Ghost colour: border colour at low alpha (matches any theme)
+        br, bg, bb = t['border'][0], t['border'][1], t['border'][2]
+
+        # Alarm bell — always visible, ghost when no alarms active
         n = self._active_alarm_count()
-        if n > 0:
-            bell_size = max(14, r * 0.28)
-            self._draw_bell(cr, cx, cy - r * 0.45, bell_size,
-                            (0.90, 0.15, 0.15, 0.95), rotate=math.pi / 4, count=n)
+        bell_rgba  = (0.90, 0.15, 0.15, 0.95) if n > 0 else (br, bg, bb, 0.10)
+        bell_size  = max(12, r * 0.221)
+        bell_x, bell_y = cx, cy - r * 0.45
+        self._draw_bell(cr, bell_x, bell_y, bell_size, bell_rgba,
+                        rotate=math.pi / 4, count=n if n > 0 else 0)
+        self._bell_draw_pos = (bell_x, bell_y)
+        self._bell_hit_r    = bell_size * 0.6
+
+        # Timer hourglass — always visible, ghost when no timers running
+        nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
+        hg_rgba   = (0.95, 0.50, 0.10, 0.95) if nt > 0 else (br, bg, bb, 0.10)
+        angle_10  = (10 / 6.0) * math.pi
+        hg_x = cx + r * 0.45 * math.sin(angle_10)
+        hg_y = cy - r * 0.45 * math.cos(angle_10)
+        hg_size = max(10, r * 0.18)
+        self._draw_hourglass(cr, hg_x, hg_y, hg_size, hg_rgba,
+                             count=nt if nt > 0 else 0)
+        self._hg_draw_pos = (hg_x, hg_y)
+        self._hg_hit_r    = hg_size * 0.7
 
     def _draw_date_window(self, cr, cx, cy, r, now, t, stud_r=None, x_3_inner=None):
         if stud_r    is None: stud_r    = max(4, r * 0.055)
@@ -1347,6 +1915,29 @@ class ClockWindow(Gtk.Window):
         else:                               self._draw_digital_font(cr, w, h, now, t)
         self._draw_digital_badge(cr, w, h, t)
 
+    def _draw_digital_icons(self, cr, w, h, t):
+        br, bg, bb = t['border'][0], t['border'][1], t['border'][2]
+        icon_size = max(8, h * 0.16)
+        pad = max(3, h * 0.06)
+        # Bell — bottom-left
+        n = self._active_alarm_count()
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n > 0 else (br, bg, bb, 0.18)
+        bx = pad + icon_size * 0.5
+        by = h - pad - icon_size * 0.5
+        self._draw_bell(cr, bx, by, icon_size, bell_rgba,
+                        rotate=math.pi / 4, count=n if n > 0 else 0)
+        self._bell_draw_pos = (bx, by)
+        self._bell_hit_r    = icon_size * 0.7
+        # Hourglass — bottom-right
+        nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
+        hg_rgba = (0.95, 0.50, 0.10, 0.90) if nt > 0 else (br, bg, bb, 0.18)
+        hx = w - pad - icon_size * 0.5
+        hy = h - pad - icon_size * 0.5
+        self._draw_hourglass(cr, hx, hy, icon_size, hg_rgba,
+                             count=nt if nt > 0 else 0)
+        self._hg_draw_pos = (hx, hy)
+        self._hg_hit_r    = icon_size * 0.7
+
     def _draw_digital_badge(self, cr, w, h, t):
         if not self.manager.show_monitor_id: return
         mid = self.monitor_idx + 1
@@ -1373,22 +1964,19 @@ class ClockWindow(Gtk.Window):
         tw, th    = self._text_size(cr, time_str, time_size)
         dw, dh    = self._text_size(cr, date_str,  date_size)
 
-        n      = self._active_alarm_count()
         show_d = self.show_date
         pad_x  = tw * 0.10; pad_y = th * 0.30
         g      = th * 0.18
-        bs     = max(14, th * 0.55) if n > 0 else 0
 
         rows_h = th
-        if n > 0:     rows_h += g + bs
-        if show_d:    rows_h += g + dh
+        if show_d: rows_h += g + dh
 
         box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, self.size - 16)
         box_h = rows_h + pad_y * 2
         bx    = cx - box_w / 2; by = cy - box_h / 2
 
         face = t['face']
-        face_alpha = 1.0 if self.opacity_level >= 1.0 else face[3]
+        face_alpha = face[3] if (t is THEMES['Clear']) else (1.0 if self.opacity_level >= 1.0 else face[3])
         cr.set_source_rgba(face[0], face[1], face[2], face_alpha)
         self._rounded_rect(cr, bx, by, box_w, box_h, 14); cr.fill()
         cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
@@ -1396,13 +1984,48 @@ class ClockWindow(Gtk.Window):
 
         y = by + pad_y
         self._draw_text(cr, cx, y, time_str, time_size, t['digital']); y += th
-        if n > 0:
-            y += g
-            self._draw_bell(cr, cx, y + bs / 2, bs, (0.90, 0.15, 0.15, 0.95),
-                            rotate=math.pi / 4, count=n); y += bs
         if show_d:
             y += g
             self._draw_text(cr, cx, y, date_str, date_size, t['marks'], alpha=0.75)
+
+        # Icons above the time text, in the top padding
+        br_c, bg_c, bb_c = t['border'][0], t['border'][1], t['border'][2]
+        icon_size = max(7, pad_y * 0.68)
+        icon_y    = by + pad_y * 0.48
+        text_x    = cx - tw / 2.0
+
+        # Measure partial strings to find colon / digit-group x positions
+        def measure_w(s):
+            lay = PangoCairo.create_layout(cr)
+            lay.set_text(s, -1)
+            lay.set_font_description(Pango.FontDescription(f'{self.digital_font} {time_size}'))
+            return lay.get_pixel_size()[0]
+
+        n  = self._active_alarm_count()
+        nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
+
+        if self.show_seconds:
+            # HH:MM:SS — icons above the two colons
+            bell_x = text_x + measure_w(time_str[:2]) + measure_w(':') * 0.5
+            hg_x   = text_x + measure_w(time_str[:5]) + measure_w(':') * 0.5
+        else:
+            # HH:MM — bell above HH centre, hourglass above MM centre
+            w_hh  = measure_w(time_str[:2])
+            w_col = measure_w(':')
+            w_mm  = measure_w(time_str[3:])
+            bell_x = text_x + w_hh * 0.5
+            hg_x   = text_x + w_hh + w_col + w_mm * 0.5
+
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n > 0 else (br_c, bg_c, bb_c, 0.10)
+        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else (br_c, bg_c, bb_c, 0.10)
+        self._draw_bell(cr, bell_x, icon_y, icon_size, bell_rgba,
+                        rotate=math.pi / 4, count=n if n > 0 else 0)
+        self._draw_hourglass(cr, hg_x, icon_y, icon_size, hg_rgba,
+                             count=nt if nt > 0 else 0)
+        self._bell_draw_pos = (bell_x, icon_y)
+        self._bell_hit_r    = icon_size * 0.8
+        self._hg_draw_pos   = (hg_x, icon_y)
+        self._hg_hit_r      = icon_size * 0.8
 
     # ── 7-segment renderer ────────────────────────────────────────────
 
@@ -1410,14 +2033,14 @@ class ClockWindow(Gtk.Window):
         time_fmt = '%H:%M:%S' if self.show_seconds else '%H:%M'
         time_str = now.strftime(time_fmt)
         dh, dw, cw, igap, total_w = self._7seg_layout()
-        pad_y  = max(4.0, dh * 0.18)
+        pad_y  = max(22, dh * 0.30)
         show_d = self.show_date
         dh2    = max(6, dh * 0.28)
         total_h = dh + pad_y * 2 + (dh2 + igap * 2 if show_d else 0)
 
         # Background box
         face   = t['face']
-        face_a = 1.0 if self.opacity_level >= 1.0 else face[3]
+        face_a = face[3] if (t is THEMES['Clear']) else (1.0 if self.opacity_level >= 1.0 else face[3])
         cr.set_source_rgba(face[0], face[1], face[2], face_a)
         self._rounded_rect(cr, 2, 2, w - 4, h - 4, 14); cr.fill()
         cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
@@ -1445,6 +2068,26 @@ class ClockWindow(Gtk.Window):
             date_y    = start_y + dh + igap * 2
             self._draw_text(cr, w / 2, date_y, date_str, date_size,
                             t['marks'], alpha=0.70, font='DejaVu Sans Bold')
+
+        # Icons at top — ghost colour matches off-segment colour
+        n  = self._active_alarm_count()
+        nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
+        icon_size = max(8, pad_y * 0.68)
+        icon_y    = (h - total_h) / 2 + pad_y * 0.48
+        if self.show_seconds:
+            bell_x = start_x + 2 * (dw + igap) + cw * 0.5
+            hg_x   = start_x + (2 * (dw + igap) + cw + igap + 2 * (dw + igap)) + cw * 0.5
+        else:
+            bell_x = start_x + dw + igap * 0.5
+            hg_x   = start_x + 2 * (dw + igap) + cw + igap + dw + igap * 0.5
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n  > 0 else seg_off
+        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else seg_off
+        self._draw_bell(cr, bell_x, icon_y, icon_size, bell_rgba,
+                        rotate=math.pi / 4, count=n if n > 0 else 0)
+        self._draw_hourglass(cr, hg_x, icon_y, icon_size, hg_rgba,
+                             count=nt if nt > 0 else 0)
+        self._bell_draw_pos = (bell_x, icon_y); self._bell_hit_r = icon_size * 0.8
+        self._hg_draw_pos   = (hg_x,   icon_y); self._hg_hit_r  = icon_size * 0.8
 
     def _draw_7seg_char(self, cr, x, y, cw, ch, char, seg_on, seg_off):
         if char == ':':
@@ -1482,14 +2125,16 @@ class ClockWindow(Gtk.Window):
         time_fmt = '%H:%M:%S' if self.show_seconds else '%H:%M'
         time_str = now.strftime(time_fmt)
         th, tw, t_gap, total_w = self._split_layout()
-        show_d  = self.show_date
-        th2     = max(6, th * 0.50) if show_d else 0
-        tw2     = th2 * 0.70        if show_d else 0
-        t_gap2  = max(1.0, th2 * 0.05) if show_d else 0
+        show_d     = self.show_date
+        th2        = max(6, th * 0.50) if show_d else 0
+        tw2        = th2 * 0.70        if show_d else 0
+        t_gap2     = max(1.0, th2 * 0.05) if show_d else 0
+        icon_strip = max(28, th * 0.40)
+        pad_y      = max(8,  th * 0.12)
 
         # Outer box (clock theme)
         face   = t['face']
-        face_a = 1.0 if self.opacity_level >= 1.0 else face[3]
+        face_a = face[3] if (t is THEMES['Clear']) else (1.0 if self.opacity_level >= 1.0 else face[3])
         cr.set_source_rgba(face[0], face[1], face[2], face_a)
         self._rounded_rect(cr, 2, 2, w - 4, h - 4, 14); cr.fill()
         cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
@@ -1501,10 +2146,8 @@ class ClockWindow(Gtk.Window):
         split_c  = (0.04, 0.04, 0.06, 1.00)
         tile_r   = max(2.0, th * 0.07)
 
-        total_h = th + (th2 + t_gap * 2 if show_d else 0)
-        pad_y   = (h - total_h) / 2
         time_x  = (w - total_w) / 2
-        time_y  = pad_y
+        time_y  = icon_strip + pad_y
 
         for ch in time_str:
             self._draw_split_tile(cr, time_x, time_y, tw, th, ch,
@@ -1516,12 +2159,42 @@ class ClockWindow(Gtk.Window):
             n_date   = len(date_str)
             date_w   = n_date * tw2 + (n_date - 1) * t_gap2
             date_x   = (w - date_w) / 2
-            date_y   = pad_y + th + t_gap * 2
+            date_y   = time_y + th + t_gap * 2
             tile_r2  = max(1.5, th2 * 0.07)
             for ch in date_str:
                 self._draw_split_tile(cr, date_x, date_y, tw2, th2, ch,
                                       tile_bg, tile_fg, split_c, tile_r2)
                 date_x += tw2 + t_gap2
+
+        # Icons at top — ghost matches dimmed tile fg
+        n  = self._active_alarm_count()
+        nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
+        icon_size = max(10, icon_strip * 0.55)
+        icon_y    = (icon_strip + pad_y) / 2
+        tile_ghost = (tile_fg[0] * 0.22, tile_fg[1] * 0.22, tile_fg[2] * 0.22, 0.30)
+        tx0 = (w - total_w) / 2
+        if self.show_seconds:
+            bell_x = tx0 + 2 * (tw + t_gap) + tw * 0.5
+            hg_x   = tx0 + 5 * (tw + t_gap) + tw * 0.5
+        else:
+            bell_x = tx0 + tw + t_gap * 0.5
+            hg_x   = tx0 + 3 * tw + t_gap * 3.5
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n  > 0 else tile_ghost
+        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else tile_ghost
+        self._draw_bell(cr, bell_x, icon_y, icon_size, bell_rgba,
+                        rotate=math.pi / 4, count=0)
+        self._draw_hourglass(cr, hg_x, icon_y, icon_size, hg_rgba, count=0)
+        # Count as split tile alongside icon
+        ct_sz = max(6, icon_size * 0.85)
+        ct_r  = max(1.0, ct_sz * 0.12)
+        if n > 0:
+            self._draw_split_tile(cr, bell_x + icon_size * 0.6, icon_y - ct_sz * 0.5,
+                                  ct_sz, ct_sz, str(n), tile_bg, tile_fg, split_c, ct_r)
+        if nt > 0:
+            self._draw_split_tile(cr, hg_x + icon_size * 0.6, icon_y - ct_sz * 0.5,
+                                  ct_sz, ct_sz, str(nt), tile_bg, tile_fg, split_c, ct_r)
+        self._bell_draw_pos = (bell_x, icon_y); self._bell_hit_r = icon_size * 0.8
+        self._hg_draw_pos   = (hg_x,   icon_y); self._hg_hit_r  = icon_size * 0.8
 
     def _draw_split_tile(self, cr, x, y, tw, th, char, tile_bg, tile_fg, split_c, tile_r):
         # Tile background
@@ -1629,8 +2302,12 @@ class ClockManager:
         self.sync            = bool(shared.get('sync_settings',   True))
         self.click_through   = bool(shared.get('click_through',   False))
         self.show_monitor_id = bool(shared.get('show_monitor_id', False))
-        self.windows       = []
-        self._active_alert = None
+        self.windows          = []
+        self._active_alert    = None
+        self._alert_windows   = []   # all currently shown alert dialogs
+        self.timers           = load_timers_on_start()
+        self._alarm_mgr_win   = None
+        self._timer_mgr_win   = None
 
         display = Gdk.Display.get_default()
         for i in range(display.get_n_monitors()):
@@ -1644,7 +2321,12 @@ class ClockManager:
                 w.apply_click_through(True)
 
         self._build_tray()
+        self._raise_counter = 0
         GLib.timeout_add(1000, self._tick)
+        # Fire any timers that expired while system was off/suspended
+        for t in list(self.timers):
+            if t['state'] == 'completed':
+                GLib.idle_add(self._fire_timer, t.copy())
 
     def _load_window_state(self, idx, geom, shared):
         mon_data = load_monitor_state(geom)
@@ -1896,7 +2578,7 @@ class ClockManager:
         menu.append(Gtk.SeparatorMenuItem())
 
         alarms_item = Gtk.MenuItem(label='Alarms…')
-        alarms_item.connect('activate', lambda _: AlarmManagerWindow(self.windows[0]))
+        alarms_item.connect('activate', lambda _: self.open_alarm_manager(self.windows[0]))
         menu.append(alarms_item)
 
         menu.append(Gtk.SeparatorMenuItem())
@@ -1940,9 +2622,18 @@ class ClockManager:
 
     def _tick(self):
         self._check_alarms()
+        self._check_timers()
+        self._raise_counter += 1
         for w in self.windows:
             if w.get_visible() and w.window_mode != 'hidden':
                 w.queue_draw()
+                if w._hover_overlay.get_visible():
+                    w._update_hover_overlay()
+                # Re-raise every 5s only when no alerts are shown
+                if self._raise_counter % 5 == 0 and not self._alert_windows:
+                    gdk_w = w.get_window()
+                    if gdk_w:
+                        gdk_w.raise_()
         return True
 
     def _check_alarms(self):
@@ -1968,13 +2659,138 @@ class ClockManager:
 
         if changed: save_alarms(alarms)
 
+    def _set_clock_clickthrough(self, enabled):
+        for w in self.windows:
+            w.apply_click_through(enabled)
+
+    def _on_alert_hide(self, dlg):
+        if dlg in self._alert_windows:
+            self._alert_windows.remove(dlg)
+        if not self._alert_windows and not self.click_through:
+            self._set_clock_clickthrough(False)
+
     def _fire_alarm(self, alarm):
         if alarm['style'] == 'sound':
             play_tone(alarm['tone'])
         else:
             parent = next((w for w in self.windows if w.get_visible()), self.windows[0])
-            self._active_alert = AlertDialog(alarm, self._alarm_dismissed)
+            dlg = AlertDialog(alarm, self._alarm_dismissed)
+            self._active_alert = dlg
+            geom = getattr(parent, 'monitor_geom', None)
+            nx, ny = self._find_clear_position(300, 200, geom)
+            dlg.move(nx, ny)
+            dlg.show_all()
+            self._alert_windows.append(dlg)
+            self._set_clock_clickthrough(True)
+            dlg.connect('hide', self._on_alert_hide)
         return False
+
+    def _check_timers(self):
+        now_ts = datetime.now().timestamp()
+        self.timers = [t for t in self.timers
+                       if t['state'] != 'completed' or
+                       (t['completed_at'] and now_ts - t['completed_at'] < 5)]
+        changed = False
+        for t in self.timers:
+            if t['state'] != 'running': continue
+            t['remaining'] -= 1
+            changed = True
+            if t['remaining'] <= 0:
+                t['remaining'] = 0
+                t['state'] = 'completed'
+                t['completed_at'] = now_ts
+                GLib.idle_add(self._fire_timer, t.copy())
+        if changed:
+            save_timers(self.timers)
+            schedule_rtc_wake(load_alarms(), self.timers)
+
+    def _fire_timer(self, timer):
+        def on_snooze(secs, snooze_count=0):
+            self.timers.append(new_timer(
+                label=timer['label'],
+                total_secs=secs,
+                tone=timer['tone'],
+                never_give_up=timer.get('never_give_up', False),
+                snooze_count=snooze_count,
+            ))
+        parent = next((w for w in self.windows if w.get_visible()), self.windows[0])
+        dlg = TimerAlertDialog(timer, lambda: None, on_snooze=on_snooze)
+        geom = getattr(parent, 'monitor_geom', None)
+        nx, ny = self._find_clear_position(300, 220, geom)
+        dlg.move(nx, ny)
+        dlg.show_all()
+        self._alert_windows.append(dlg)
+        self._set_clock_clickthrough(True)
+        dlg.connect('hide', self._on_alert_hide)
+        return False
+
+    def _find_clear_position(self, w, h, geom=None, extra_occupied=None):
+        """Return (x,y) that places a w×h window on the given monitor without overlap."""
+        if geom:
+            mx, my, mw, mh = geom.x, geom.y, geom.width, geom.height
+        else:
+            s = Gdk.Screen.get_default()
+            mx, my, mw, mh = 0, 0, s.get_width(), s.get_height()
+
+        # Default: centre of monitor
+        cx = mx + (mw - w) // 2
+        cy = my + (mh - h) // 2
+
+        occupied = list(extra_occupied or [])
+        for win in [self._alarm_mgr_win, self._timer_mgr_win] + self._alert_windows:
+            if win and win.get_visible():
+                try:
+                    ox, oy = win.get_position()
+                    ow, oh = win.get_size()
+                    occupied.append((ox, oy, ow, oh))
+                except Exception:
+                    pass
+
+        def _clear(nx, ny):
+            # Clamp strictly to monitor
+            nx = max(mx, min(nx, mx + mw - w))
+            ny = max(my, min(ny, my + mh - h))
+            return nx, ny, all(
+                nx + w <= ox or nx >= ox + ow or ny + h <= oy or ny >= oy + oh
+                for ox, oy, ow, oh in occupied)
+
+        if not occupied:
+            nx, ny, _ = _clear(cx, cy)
+            return nx, ny
+
+        step = 40
+        for s in range(0, max(mw, mh), step):
+            for dx, dy in [(s, s), (-s, s), (s, -s), (-s, -s),
+                           (s, 0), (-s, 0), (0, s), (0, -s)]:
+                nx, ny, ok = _clear(cx + dx, cy + dy)
+                if ok:
+                    return nx, ny
+
+        # Fallback: cascade from last occupied window, clamped
+        ox, oy = occupied[-1][0], occupied[-1][1]
+        nx, ny, _ = _clear(ox + 40, oy + 40)
+        return nx, ny
+
+    def _show_window(self, win, w, h, geom=None, extra_occupied=None):
+        """Position win at a clear spot then show it."""
+        win.set_position(Gtk.WindowPosition.NONE)
+        nx, ny = self._find_clear_position(w, h, geom, extra_occupied)
+        win.move(nx, ny)
+        win.show_all()
+
+    def open_alarm_manager(self, parent):
+        if self._alarm_mgr_win and self._alarm_mgr_win.get_visible():
+            self._alarm_mgr_win.present(); return
+        self._alarm_mgr_win = AlarmManagerWindow(parent)
+        geom = getattr(parent, 'monitor_geom', None)
+        self._show_window(self._alarm_mgr_win, 460, 300, geom)
+
+    def open_timer_manager(self, parent):
+        if self._timer_mgr_win and self._timer_mgr_win.get_visible():
+            self._timer_mgr_win.present(); return
+        self._timer_mgr_win = TimerManagerWindow(parent, self)
+        geom = getattr(parent, 'monitor_geom', None)
+        self._show_window(self._timer_mgr_win, 480, 260, geom)
 
     def _alarm_dismissed(self, alarm):
         self._active_alert = None
@@ -1982,6 +2798,8 @@ class ClockManager:
 
     def _quit(self):
         for w in self.windows: w._save_all()
+        save_timers(self.timers)
+        schedule_rtc_wake(load_alarms(), self.timers)
         Gtk.main_quit()
 
 
