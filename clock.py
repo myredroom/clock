@@ -19,9 +19,11 @@ import subprocess
 import shutil
 from datetime import datetime, timedelta
 
-STATE_FILE  = os.path.expanduser('~/clock/state.json')
-ALARMS_FILE = os.path.expanduser('~/clock/alarms.json')
-TIMERS_FILE = os.path.expanduser('~/clock/timers.json')
+DATA_DIR    = os.path.expanduser('~/.local/share/desktop-clock')
+os.makedirs(DATA_DIR, exist_ok=True)
+STATE_FILE  = os.path.join(DATA_DIR, 'state.json')
+ALARMS_FILE = os.path.join(DATA_DIR, 'alarms.json')
+TIMERS_FILE = os.path.join(DATA_DIR, 'timers.json')
 
 # ─── State persistence ────────────────────────────────────────────────
 
@@ -40,7 +42,7 @@ def save_state(data):
         pass
 
 def monitor_state_file(geom):
-    return os.path.expanduser(f'~/clock/state_monitor_{geom.x}_{geom.y}.json')
+    return os.path.join(DATA_DIR, f'state_monitor_{geom.x}_{geom.y}.json')
 
 def load_monitor_state(geom):
     try:

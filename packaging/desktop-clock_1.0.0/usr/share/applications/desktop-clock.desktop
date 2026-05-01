@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Desktop Clock
+Comment=Analog/digital desktop clock with alarms and timers
+Exec=desktop-clock
+Icon=desktop-clock
+Terminal=false
+Type=Application
+Categories=Utility;Clock;
+StartupNotify=false
