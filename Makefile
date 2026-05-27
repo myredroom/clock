@@ -26,7 +26,7 @@ deb:
 	cp packaging/icons/desktop-clock-256.png $(BUILD)/usr/share/icons/hicolor/256x256/apps/$(PKG).png
 
 	# Write control file
-	@printf 'Package: $(PKG)\nVersion: $(VERSION)\nArchitecture: all\nMaintainer: Brendan <myredroom@gmail.com>\nDepends: python3, python3-gi, python3-cairo, gir1.2-gtk-3.0, gir1.2-pango-1.0\nDescription: Analog/digital desktop clock\n A Python GTK3 desktop clock with analog and digital display modes,\n alarms, timers, snap-to-corner, and per-monitor position memory.\n Runs as a lightweight always-on-top overlay with a system tray icon.\n' \
+	@printf 'Package: $(PKG)\nVersion: $(VERSION)\nArchitecture: all\nMaintainer: Brendan <myredroom@gmail.com>\nDepends: python3, python3-gi, python3-cairo, gir1.2-gtk-3.0, gir1.2-pango-1.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0\nDescription: Analog/digital desktop clock\n A Python GTK3 desktop clock with analog and digital display modes,\n alarms, timers, snap-to-corner, and per-monitor position memory.\n Runs as a lightweight always-on-top overlay with a system tray icon.\n HomieLab Tracker integration requires a local HomieLab Tracker instance.\n' \
 		> $(BUILD)/DEBIAN/control
 
 	# Write launcher

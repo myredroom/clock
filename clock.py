@@ -19,11 +19,50 @@ import subprocess
 import shutil
 from datetime import datetime, timedelta
 
-DATA_DIR    = os.path.expanduser('~/.local/share/desktop-clock')
+# WebKit2 is optional — tracker panel requires it; feature is absent if not installed
+_WEBKIT_AVAILABLE = False
+try:
+    for _wk_ver in ('4.1', '4.0'):
+        try:
+            gi.require_version('WebKit2', _wk_ver)
+            from gi.repository import WebKit2 as _WebKit2
+            _WEBKIT_AVAILABLE = True
+            break
+        except (ValueError, ImportError):
+            pass
+except Exception:
+    pass
+
+APP_NAME        = 'Desktop Clock'
+APP_VERSION     = '1.0.0'
+APP_PROJECT_KEY = 'desktop-clock'
+DATA_DIR        = os.path.expanduser('~/.local/share/desktop-clock')
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, 'state.json')
 ALARMS_FILE = os.path.join(DATA_DIR, 'alarms.json')
 TIMERS_FILE = os.path.join(DATA_DIR, 'timers.json')
+
+# ─── Tracker config ──────────────────────────────────────────────────
+
+TRACKER_KEYS = ('tracker_url', 'tracker_project_key', 'tracker_api_key')
+
+def load_tracker_config():
+    state = load_state() if os.path.exists(STATE_FILE) else {}
+    return {k: state.get(k, '') for k in ('tracker_url', 'tracker_project_key',
+                                           'tracker_api_key', 'tracker_intro_seen',
+                                           'tracker_disabled')}
+
+def save_tracker_config(cfg):
+    state = load_state()
+    state.update(cfg)
+    save_state(state)
+
+def tracker_configured():
+    """True only when WebKit is available and all three config values are set."""
+    if not _WEBKIT_AVAILABLE:
+        return False
+    cfg = load_tracker_config()
+    return all(cfg.get(k, '').strip() for k in TRACKER_KEYS)
 
 # ─── State persistence ────────────────────────────────────────────────
 
@@ -493,6 +532,277 @@ def _red_close_button(label, callback):
     btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     btn.connect('clicked', lambda _: callback())
     return btn
+
+# ─── HomieLab Tracker integration ────────────────────────────────────
+
+class TrackerIntroDialog(Gtk.Window):
+    """First-run onboarding dialog explaining the tracker feature."""
+
+    def __init__(self, on_configure, on_disable, on_later):
+        super().__init__()
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_resizable(False)
+        self.set_border_width(0)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        _setup_undecorated_window(self, vbox)
+        vbox.pack_start(_make_titlebar(self, 'Issue Tracker'), False, False, 0)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        body.set_margin_start(20); body.set_margin_end(20)
+        body.set_margin_top(12);   body.set_margin_bottom(16)
+
+        heading = Gtk.Label()
+        heading.set_markup(f'<b>Report bugs from {GLib.markup_escape_text(APP_NAME)}</b>')
+        heading.set_xalign(0)
+        body.pack_start(heading, False, False, 0)
+
+        info = Gtk.Label()
+        info.set_markup(
+            f'{GLib.markup_escape_text(APP_NAME)} can connect to a <b>HomieLab Tracker</b> instance\n'
+            'running on your local network, letting you log bugs and\n'
+            f'feedback without leaving {GLib.markup_escape_text(APP_NAME)}.\n\n'
+            '<b>This is a self-hosted feature.</b> It requires:\n'
+            '  • A running HomieLab Tracker on your network\n'
+            '  • A project key and API key for this app\n\n'
+            'It will not work without a HomieLab Tracker instance\n'
+            'and has no connection to any external service.'
+        )
+        info.set_xalign(0)
+        info.set_line_wrap(True)
+        body.pack_start(info, False, False, 0)
+
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        body.pack_start(sep, False, False, 4)
+
+        btn_row = Gtk.Box(spacing=8)
+        btn_row.set_halign(Gtk.Align.END)
+
+        disable_btn = Gtk.Button(label='Disable')
+        disable_btn.set_tooltip_text('Hide this feature permanently')
+        disable_btn.connect('clicked', lambda _: self._respond(on_disable))
+        btn_row.pack_start(disable_btn, False, False, 0)
+
+        later_btn = Gtk.Button(label='Later')
+        later_btn.connect('clicked', lambda _: self._respond(on_later))
+        btn_row.pack_start(later_btn, False, False, 0)
+
+        config_btn = Gtk.Button(label='Configure…')
+        css = Gtk.CssProvider()
+        css.load_from_data(b'button { background: #1a6496; color: white; }')
+        config_btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        config_btn.connect('clicked', lambda _: self._respond(on_configure))
+        btn_row.pack_start(config_btn, False, False, 0)
+
+        body.pack_start(btn_row, False, False, 0)
+        vbox.pack_start(body, False, False, 0)
+        self.add(vbox)
+        self.show_all()
+
+    def _respond(self, callback):
+        self.destroy()
+        callback()
+
+
+class TrackerConfigDialog(Gtk.Window):
+    """Settings dialog for HomieLab Tracker connection."""
+
+    def __init__(self, parent, on_save=None):
+        super().__init__()
+        self.set_transient_for(parent)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_resizable(False)
+        self.set_border_width(0)
+        self._on_save = on_save
+
+        cfg = load_tracker_config()
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        _setup_undecorated_window(self, vbox)
+        vbox.pack_start(_make_titlebar(self, 'Issue Tracker — Configure'), False, False, 0)
+
+        grid = Gtk.Grid(row_spacing=10, column_spacing=12)
+        grid.set_margin_start(16); grid.set_margin_end(16)
+        grid.set_margin_top(12);   grid.set_margin_bottom(8)
+        row = 0
+
+        grid.attach(Gtk.Label(label='Tracker URL:', xalign=0), 0, row, 1, 1)
+        self._url = Gtk.Entry()
+        self._url.set_text(cfg.get('tracker_url', '') or '')
+        self._url.set_hexpand(True); self._url.set_width_chars(36)
+        grid.attach(self._url, 1, row, 1, 1); row += 1
+
+        grid.attach(Gtk.Label(label='Project key:', xalign=0), 0, row, 1, 1)
+        self._key = Gtk.Entry()
+        self._key.set_text(cfg.get('tracker_project_key', '') or APP_PROJECT_KEY)
+        self._key.set_hexpand(True)
+        hint = Gtk.Label()
+        hint.set_markup('<small><i>Shown on the project page in your tracker</i></small>')
+        hint.set_xalign(0)
+        grid.attach(self._key, 1, row, 1, 1); row += 1
+        grid.attach(hint, 1, row, 1, 1); row += 1
+
+        grid.attach(Gtk.Label(label='API key:', xalign=0), 0, row, 1, 1)
+        self._api = Gtk.Entry()
+        self._api.set_text(cfg.get('tracker_api_key', ''))
+        self._api.set_placeholder_text('hlt_…')
+        self._api.set_visibility(False)
+        self._api.set_hexpand(True)
+        grid.attach(self._api, 1, row, 1, 1); row += 1
+
+        self._status = Gtk.Label(label='')
+        self._status.set_xalign(0)
+        self._status.set_margin_top(2)
+        grid.attach(self._status, 0, row, 2, 1); row += 1
+
+        vbox.pack_start(grid, False, False, 0)
+
+        btn_row = Gtk.Box(spacing=8)
+        btn_row.set_margin_start(16); btn_row.set_margin_end(16); btn_row.set_margin_bottom(14)
+        btn_row.set_halign(Gtk.Align.END)
+
+        cancel_btn = _red_close_button('Cancel', self.destroy)
+        btn_row.pack_start(cancel_btn, False, False, 0)
+
+        test_btn = Gtk.Button(label='Test connection')
+        test_btn.connect('clicked', self._test)
+        btn_row.pack_start(test_btn, False, False, 0)
+
+        save_btn = Gtk.Button(label='Save')
+        css = Gtk.CssProvider()
+        css.load_from_data(b'button { background: #1a6496; color: white; }')
+        save_btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        save_btn.connect('clicked', self._save)
+        btn_row.pack_start(save_btn, False, False, 0)
+
+        vbox.pack_start(btn_row, False, False, 0)
+        self.add(vbox)
+        self.show_all()
+
+    def _values(self):
+        return (self._url.get_text().strip().rstrip('/'),
+                self._key.get_text().strip(),
+                self._api.get_text().strip())
+
+    def _test(self, _):
+        url, key, api = self._values()
+        if not all([url, key, api]):
+            self._status.set_markup('<span color="#c0392b">Fill in all three fields first.</span>')
+            return
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f'{url}/api/projects/{key}/issues',
+                headers={'X-API-Key': api})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                r.read()
+            self._status.set_markup('<span color="#27ae60">Connection successful.</span>')
+        except Exception as e:
+            self._status.set_markup(f'<span color="#c0392b">Failed: {GLib.markup_escape_text(str(e))}</span>')
+
+    def _save(self, _):
+        url, key, api = self._values()
+        if not all([url, key, api]):
+            self._status.set_markup('<span color="#c0392b">Fill in all three fields to save.</span>')
+            return
+        save_tracker_config({
+            'tracker_url': url,
+            'tracker_project_key': key,
+            'tracker_api_key': api,
+            'tracker_intro_seen': True,
+            'tracker_disabled': False,
+        })
+        self.destroy()
+        if self._on_save:
+            self._on_save()
+
+
+class TrackerPanelWindow(Gtk.Window):
+    """GTK window containing an embedded WebKit2 panel.js view."""
+
+    def __init__(self, parent):
+        super().__init__(title=f'Report a bug — {APP_NAME}')
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_default_size(520, 640)
+
+        cfg = load_tracker_config()
+        url     = cfg.get('tracker_url', '').rstrip('/')
+        key     = cfg.get('tracker_project_key', '')
+        api_key = cfg.get('tracker_api_key', '')
+
+        # Message handler lets JS close the GTK window cleanly
+        ucm = _WebKit2.UserContentManager()
+        ucm.register_script_message_handler('hltClose')
+        ucm.connect('script-message-received::hltClose', lambda *_: self.destroy())
+
+        wv = _WebKit2.WebView.new_with_user_content_manager(ucm)
+        wv.set_hexpand(True)
+        wv.set_vexpand(True)
+        wv.connect('context-menu', lambda *_: True)
+        wv.connect('decide-policy', self._on_policy)
+
+        html = f'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  html, body {{ height: 100vh; overflow: hidden; background: #f8fafc; }}
+  /* Make the panel fill the window instead of floating as an overlay */
+  #hlt-overlay {{
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    display: flex !important;
+    height: 100vh;
+  }}
+  #hlt-panel {{
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+  }}
+</style>
+</head>
+<body>
+<script src="{url}/panel.js"></script>
+<script>
+  document.addEventListener("DOMContentLoaded", function() {{
+    HLTPanel.init({{
+      trackerUrl: "{url}",
+      project:    "{key}",
+      apiKey:     "{api_key}",
+      version:    "{APP_VERSION}"
+    }});
+    HLTPanel.close = function() {{
+      window.webkit.messageHandlers.hltClose.postMessage('close');
+    }};
+    HLTPanel.open();
+  }});
+</script>
+</body>
+</html>'''
+
+        wv.load_html(html, f'{url}/')
+        self.add(wv)
+        self.show_all()
+
+    def _on_policy(self, wv, decision, dtype):
+        if dtype == _WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
+            action = decision.get_navigation_action()
+            if action.get_navigation_type() == _WebKit2.NavigationType.LINK_CLICKED:
+                uri = action.get_request().get_uri()
+                subprocess.Popen(['xdg-open', uri])
+                decision.ignore()
+                return True
+        return False
 
 # ─── Alarm manager window ─────────────────────────────────────────────
 
@@ -991,7 +1301,7 @@ SEG_PATTERNS   = {
 
 class ClockWindow(Gtk.Window):
     def __init__(self, manager, monitor_idx, geom, state):
-        super().__init__()
+        super().__init__(type=Gtk.WindowType.POPUP)
         self.manager      = manager
         self.monitor_idx  = monitor_idx
         self.monitor_geom = geom
@@ -1028,8 +1338,6 @@ class ClockWindow(Gtk.Window):
     def _build_window(self):
         self.set_title(f'Clock-{self.monitor_idx}')
         self.set_decorated(False)
-        self.set_keep_above(True)
-        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_app_paintable(True)
@@ -1301,6 +1609,10 @@ class ClockWindow(Gtk.Window):
                 opacity_sub.append(item)
             opacity_item.set_submenu(opacity_sub)
             menu.append(opacity_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+        shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+        self._append_tracker_menu_items(menu, show_reset=shift)
 
         menu.show_all()
         menu.popup_at_pointer(event)
@@ -2280,6 +2592,17 @@ class ClockWindow(Gtk.Window):
             cr.move_to(tl_x, tl_y); cr.line_to(tip_x, tip_y); cr.stroke()
         cr.restore()
 
+    def _append_tracker_menu_items(self, menu, show_reset=False):
+        cfg = load_tracker_config()
+        if not cfg.get('tracker_disabled') and tracker_configured():
+            bug_item = Gtk.MenuItem(label='Report a bug…')
+            bug_item.connect('activate', lambda _: self.manager.open_tracker_panel(self))
+            menu.append(bug_item)
+        if show_reset:
+            reset_item = Gtk.MenuItem(label='Reset tracker setup…')
+            reset_item.connect('activate', lambda _: self.manager.reset_tracker(self))
+            menu.append(reset_item)
+
     def apply_click_through(self, enabled):
         if enabled:
             self.input_shape_combine_region(cairo.Region())
@@ -2323,8 +2646,13 @@ class ClockManager:
                 w.apply_click_through(True)
 
         self._build_tray()
-        self._raise_counter = 0
+        self._tracker_panel  = None
         GLib.timeout_add(1000, self._tick)
+        # Show tracker first-run dialog if WebKit available and not yet seen/disabled
+        if _WEBKIT_AVAILABLE:
+            cfg = load_tracker_config()
+            if not cfg.get('tracker_intro_seen') and not cfg.get('tracker_disabled'):
+                GLib.idle_add(self._show_tracker_intro)
         # Fire any timers that expired while system was off/suspended
         for t in list(self.timers):
             if t['state'] == 'completed':
@@ -2605,6 +2933,21 @@ class ClockManager:
 
         menu.append(Gtk.SeparatorMenuItem())
 
+        cfg = load_tracker_config()
+        parent_win = self.windows[0] if self.windows else None
+        if not cfg.get('tracker_disabled') and tracker_configured():
+            bug_item = Gtk.MenuItem(label='Report a bug…')
+            bug_item.connect('activate', lambda _, p=parent_win: self.open_tracker_panel(p))
+            menu.append(bug_item)
+        ev = Gtk.get_current_event()
+        shift = bool(ev and ev.get_state()[1] & Gdk.ModifierType.SHIFT_MASK)
+        if shift:
+            reset_item = Gtk.MenuItem(label='Reset tracker setup…')
+            reset_item.connect('activate', lambda _, p=parent_win: self.reset_tracker(p))
+            menu.append(reset_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
         close_item = Gtk.MenuItem(label='Close menu')
         close_item.connect('activate', lambda _: None)
         menu.append(close_item)
@@ -2625,17 +2968,11 @@ class ClockManager:
     def _tick(self):
         self._check_alarms()
         self._check_timers()
-        self._raise_counter += 1
         for w in self.windows:
             if w.get_visible() and w.window_mode != 'hidden':
                 w.queue_draw()
                 if w._hover_overlay.get_visible():
                     w._update_hover_overlay()
-                # Re-raise every 5s only when no alerts are shown
-                if self._raise_counter % 5 == 0 and not self._alert_windows:
-                    gdk_w = w.get_window()
-                    if gdk_w:
-                        gdk_w.raise_()
         return True
 
     def _check_alarms(self):
@@ -2797,6 +3134,51 @@ class ClockManager:
     def _alarm_dismissed(self, alarm):
         self._active_alert = None
         for w in self.windows: w.queue_draw()
+
+    # ── Tracker ───────────────────────────────────────────────────────
+
+    def _show_tracker_intro(self):
+        parent = self.windows[0] if self.windows else None
+
+        def on_configure():
+            save_tracker_config({'tracker_intro_seen': True})
+            dlg = TrackerConfigDialog(parent)
+            nx, ny = self._find_clear_position(460, 260,
+                                               getattr(parent, 'monitor_geom', None))
+            dlg.move(nx, ny)
+            dlg.show_all()
+
+        def on_disable():
+            save_tracker_config({'tracker_intro_seen': True, 'tracker_disabled': True})
+
+        def on_later():
+            pass  # flag stays False — will show again next launch
+
+        dlg = TrackerIntroDialog(on_configure, on_disable, on_later)
+        nx, ny = self._find_clear_position(440, 340,
+                                           getattr(parent, 'monitor_geom', None))
+        dlg.move(nx, ny)
+        return False
+
+    def open_tracker_panel(self, parent):
+        if self._tracker_panel and self._tracker_panel.get_visible():
+            self._tracker_panel.present()
+            return
+        self._tracker_panel = TrackerPanelWindow(parent)
+        geom = getattr(parent, 'monitor_geom', None)
+        nx, ny = self._find_clear_position(480, 600, geom)
+        self._tracker_panel.move(nx, ny)
+
+    def reset_tracker(self, parent):
+        save_tracker_config({
+            'tracker_url':         '',
+            'tracker_project_key': '',
+            'tracker_api_key':     '',
+            'tracker_intro_seen':  False,
+            'tracker_disabled':    False,
+        })
+        if _WEBKIT_AVAILABLE:
+            GLib.idle_add(self._show_tracker_intro)
 
     def _quit(self):
         for w in self.windows: w._save_all()
