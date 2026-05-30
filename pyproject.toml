@@ -1,0 +1,7 @@
+[project]
+name = "desktop-clock"
+version = "1.1.1"
+description = "Analog/digital desktop clock with alarms, timers, and snap-to-corner"
+authors = [{name = "Brendan", email = "myredroom@gmail.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.8"

@@ -17,6 +17,11 @@ import array
 import tempfile
 import subprocess
 import shutil
+import ctypes
+import ctypes.util
+import re as _re
+import random
+from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PKGNotFound
 from datetime import datetime, timedelta
 
 # WebKit2 is optional — tracker panel requires it; feature is absent if not installed
@@ -34,8 +39,21 @@ except Exception:
     pass
 
 APP_NAME        = 'Desktop Clock'
-APP_VERSION     = '1.0.0'
 APP_PROJECT_KEY = 'desktop-clock'
+
+try:
+    APP_VERSION = _pkg_version('desktop-clock')
+except _PKGNotFound:
+    _pyproject = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pyproject.toml')
+    try:
+        _m = _re.search(r'^\s*version\s*=\s*["\']([^"\']+)["\']', open(_pyproject).read(), _re.MULTILINE)
+        APP_VERSION = _m.group(1) if _m else 'unknown'
+    except Exception:
+        APP_VERSION = 'unknown'
+
+_libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+_libc.prctl(15, APP_PROJECT_KEY.encode(), 0, 0, 0)  # PR_SET_NAME
+
 DATA_DIR        = os.path.expanduser('~/.local/share/desktop-clock')
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, 'state.json')
@@ -1315,6 +1333,7 @@ class ClockWindow(Gtk.Window):
         self.mode          = state.get('mode', 'Analog')
         self.show_seconds  = bool(state.get('show_seconds', True))
         self.show_date     = bool(state.get('show_date', True))
+        self.show_eyes     = bool(state.get('show_eyes', False))
         self.marker_style  = state.get('marker_style', 'Marks')
         self.hand_style    = state.get('hand_style', 'Classic')
         self.digital_style = state.get('digital_style', 'Font')
@@ -1327,9 +1346,22 @@ class ClockWindow(Gtk.Window):
         self._resizing    = False
         self._saved_pos   = (state['x'], state['y']) if 'x' in state else None
 
+        # Eye animation state
+        self._eye_angle       = 0.0
+        self._eye_travel      = 0.0
+        self._eye_tgt_angle   = random.uniform(-math.pi, math.pi)
+        self._eye_tgt_travel  = random.uniform(0.2, 0.5)
+        self._eye_blink       = 0.0
+        self._eye_blink_phase = 'idle'
+        self._eye_frames_left = random.randint(80, 160)
+        self._eye_move_frames = random.randint(40, 100)
+        self._eye_timer_id    = None
+
         self._build_window()
         self.props.opacity = 1.0 if self.theme is THEMES['Clear'] else self.opacity_level
 
+        if self.show_eyes:
+            GLib.idle_add(self._start_eye_timer)
         if self.window_mode == 'hidden':
             GLib.idle_add(lambda: self.set_window_mode('hidden') or False)
 
@@ -1409,6 +1441,7 @@ class ClockWindow(Gtk.Window):
         data = {'x': x, 'y': y, 'size_name': size_name, 'theme_name': theme_name,
                 'opacity': self.opacity_level, 'mode': self.mode,
                 'show_seconds': self.show_seconds, 'show_date': self.show_date,
+                'show_eyes': self.show_eyes,
                 'marker_style': self.marker_style, 'hand_style': self.hand_style,
                 'digital_style': self.digital_style, 'digital_font': self.digital_font,
                 'window_mode': self.window_mode}
@@ -1418,6 +1451,7 @@ class ClockWindow(Gtk.Window):
         if not self._resizing and self.window_mode == 'normal':
             self._saved_pos = (event.x, event.y)
             self._save_all(event.x, event.y)
+        self._sync_monitor_geom()
 
     # ── Input handling ────────────────────────────────────────────────
 
@@ -1541,6 +1575,11 @@ class ClockWindow(Gtk.Window):
         date_item.connect('activate', self._toggle_date)
         menu.append(date_item)
 
+        eyes_item = Gtk.CheckMenuItem(label='Show eyes')
+        eyes_item.set_active(self.show_eyes)
+        eyes_item.connect('activate', self._toggle_eyes)
+        menu.append(eyes_item)
+
         mid_item = Gtk.CheckMenuItem(label='Show monitor ID')
         mid_item.set_active(self.manager.show_monitor_id)
         mid_item.connect('activate', lambda i: self.manager.set_show_monitor_id(i.get_active()))
@@ -1624,6 +1663,13 @@ class ClockWindow(Gtk.Window):
 
     def _toggle_date(self, item):
         self.show_date = item.get_active()
+        if self.mode == 'Digital': self._apply_window_size()
+        self._save_all(); self.queue_draw()
+
+    def _toggle_eyes(self, item):
+        self.show_eyes = item.get_active()
+        if self.show_eyes:
+            self._start_eye_timer()
         if self.mode == 'Digital': self._apply_window_size()
         self._save_all(); self.queue_draw()
 
@@ -1722,9 +1768,11 @@ class ClockWindow(Gtk.Window):
         pad_x  = tw * 0.10; pad_y = th * 0.30
         g      = th * 0.18
         bs     = max(14, th * 0.55) if n > 0 else 0
+        eye_r  = th * 0.27 if self.show_eyes else 0.0
         rows_h = th
-        if n > 0:  rows_h += g + bs
-        if show_d: rows_h += g + dh
+        if n > 0:          rows_h += g + bs
+        if self.show_eyes: rows_h += g + eye_r * 2.0
+        if show_d:         rows_h += g + dh
         box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, self.size - 16)
         box_h = rows_h + pad_y * 2
         return int(box_w) + 4, int(box_h) + 4
@@ -1751,8 +1799,8 @@ class ClockWindow(Gtk.Window):
         pad_x = max(4.0, total_w * 0.04)
         pad_y = max(22, dh * 0.30)
         box_h = dh + pad_y * 2
-        if self.show_date:
-            box_h += max(6, dh * 0.28) + igap * 2
+        if self.show_eyes: box_h += dh * 0.22 * 2.0 + igap * 2
+        if self.show_date: box_h += max(6, dh * 0.28) + igap * 2
         return int(total_w + pad_x * 2) + 4, int(box_h) + 4
 
     # ── Split-flap layout helpers ─────────────────────────────────────
@@ -1792,11 +1840,44 @@ class ClockWindow(Gtk.Window):
             return self._digital_content_size()
         return self.size, self.size
 
+    def _current_monitor(self):
+        """Return the GDK monitor the window is actually positioned on, by coordinates.
+        Avoids trusting self.monitor_idx, which can become stale after sleep/wake when
+        GDK re-enumerates monitors and their order changes."""
+        display = Gdk.Display.get_default()
+        wx, wy = self.get_position()
+        cw, ch = self._clock_size()
+        cx, cy = wx + cw // 2, wy + ch // 2
+        for i in range(display.get_n_monitors()):
+            g = display.get_monitor(i).get_geometry()
+            if g.x <= cx < g.x + g.width and g.y <= cy < g.y + g.height:
+                return display.get_monitor(i)
+        # Window centre not inside any monitor — return closest by centre distance
+        best, best_dist = display.get_monitor(0), float('inf')
+        for i in range(display.get_n_monitors()):
+            m = display.get_monitor(i)
+            g = m.get_geometry()
+            d = math.hypot(cx - (g.x + g.width // 2), cy - (g.y + g.height // 2))
+            if d < best_dist:
+                best, best_dist = m, d
+        return best
+
+    def _sync_monitor_geom(self):
+        """Update monitor_geom and monitor_idx to match where the window actually is.
+        Called on configure events and on monitors-changed so eyes tracking and
+        constraint rects are always correct."""
+        display = Gdk.Display.get_default()
+        mon     = self._current_monitor()
+        self.monitor_geom = mon.get_geometry()
+        for i in range(display.get_n_monitors()):
+            if display.get_monitor(i) == mon:
+                self.monitor_idx = i
+                break
+
     def _constraint_rect(self):
         """Return (left, top, right, bottom) of the draggable area for this monitor."""
         try:
-            display = Gdk.Display.get_default()
-            mon = display.get_monitor(self.monitor_idx)
+            mon = self._current_monitor()
             wa  = mon.get_workarea()
             px_per_mm = mon.get_geometry().width / max(mon.get_width_mm(), 1)
             gap = max(8, round(5 * px_per_mm))
@@ -1951,6 +2032,126 @@ class ClockWindow(Gtk.Window):
             cr.set_source_rgba(1, 1, 1, 1)
             PangoCairo.show_layout(cr, layout)
         cr.restore()
+
+    # ── Eye animation ─────────────────────────────────────────────────
+
+    def _start_eye_timer(self):
+        if not self._eye_timer_id:
+            self._eye_timer_id = GLib.timeout_add(50, self._eye_tick)
+        return False  # safe as GLib.idle_add callback
+
+    def _eye_tick(self):
+        if not self.show_eyes:
+            self._eye_timer_id = None
+            return False
+        self._update_eye_idle()
+        if self.get_visible() and self.window_mode != 'hidden':
+            self.queue_draw()
+        return True
+
+    def _update_eye_idle(self):
+        """Update eye animation state — blink always; idle drift when mouse not on this monitor."""
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        g = self.monitor_geom
+        mouse_here = g.x <= mx < g.x + g.width and g.y <= my < g.y + g.height
+
+        # Blink state machine (runs regardless of mouse position)
+        if self._eye_blink_phase == 'idle':
+            self._eye_frames_left -= 1
+            if self._eye_frames_left <= 0:
+                self._eye_blink_phase = 'closing'
+        elif self._eye_blink_phase == 'closing':
+            self._eye_blink = min(1.0, self._eye_blink + 0.28)
+            if self._eye_blink >= 1.0:
+                self._eye_blink_phase = 'closed'
+                self._eye_frames_left = 2
+        elif self._eye_blink_phase == 'closed':
+            self._eye_frames_left -= 1
+            if self._eye_frames_left <= 0:
+                self._eye_blink_phase = 'opening'
+        elif self._eye_blink_phase == 'opening':
+            self._eye_blink = max(0.0, self._eye_blink - 0.28)
+            if self._eye_blink <= 0.0:
+                self._eye_blink_phase = 'idle'
+                self._eye_frames_left = random.randint(80, 180)  # 4-9 s at 20 fps
+
+        if mouse_here:
+            return
+
+        # Lazy idle drift — slowly wander toward a random target
+        da = self._eye_tgt_angle - self._eye_angle
+        while da >  math.pi: da -= 2 * math.pi
+        while da < -math.pi: da += 2 * math.pi
+        self._eye_angle  += da  * 0.06
+        self._eye_travel += (self._eye_tgt_travel - self._eye_travel) * 0.06
+
+        self._eye_move_frames -= 1
+        if self._eye_move_frames <= 0:
+            self._eye_tgt_angle   = random.uniform(-math.pi, math.pi)
+            self._eye_tgt_travel  = random.uniform(0.15, 0.65)
+            self._eye_move_frames = random.randint(40, 120)  # 2-6 s between drifts
+
+    def _draw_eyes(self, cr, ecx, ecy, eye_r):
+        """Draw a pair of xeyes-style eyes — tracking when mouse is on this monitor, idle otherwise."""
+        spacing = eye_r * 2.2
+        wx, wy  = self.get_position()
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+
+        g = self.monitor_geom
+        mouse_here = g.x <= mx < g.x + g.width and g.y <= my < g.y + g.height
+
+        # Eye shape: portrait (taller than wide)
+        sx = 0.76   # horizontal scale — narrower
+        sy = 1.0    # vertical scale   — full height
+
+        blink     = self._eye_blink
+        open_frac = max(0.04, 1.0 - blink)  # how open: 1=fully open, ~0=closed
+
+        for sign in (-1, 1):
+            ox = ecx + sign * spacing / 2
+            oy = ecy
+
+            # new_path() prevents Cairo adding a line from the text renderer's
+            # current point to the arc start (which caused the diagonal line artifact)
+            cr.new_path()
+            cr.save()
+            cr.translate(ox, oy)
+            cr.scale(sx, sy * open_frac)
+            cr.arc(0, 0, eye_r, 0, 2 * math.pi)
+            cr.restore()
+            cr.set_source_rgba(0.96, 0.96, 0.94, 0.93)
+            cr.fill_preserve()
+            cr.set_source_rgba(0.22, 0.22, 0.22, 0.72)
+            cr.set_line_width(max(0.8, eye_r * 0.06))
+            cr.stroke()
+
+            # Pupil — only when eye is open enough to see it
+            if open_frac > 0.55:
+                if mouse_here:
+                    angle = math.atan2(my - (wy + oy), mx - (wx + ox))
+                    dist  = math.hypot(mx - (wx + ox), my - (wy + oy))
+                    # Pupil reaches near edge once mouse is ~3 eye radii away
+                    tfrac = min(1.0, dist / (eye_r * 3.0))
+                else:
+                    angle = self._eye_angle
+                    tfrac = self._eye_travel
+
+                pupil_r = eye_r * 0.40
+                px = ox + (eye_r * sx - pupil_r) * 0.88 * tfrac * math.cos(angle)
+                py = oy + (eye_r      - pupil_r) * 0.88 * tfrac * math.sin(angle)
+
+                p_alpha = min(1.0, (open_frac - 0.55) / 0.45)
+
+                cr.new_path()
+                cr.arc(px, py, pupil_r, 0, 2 * math.pi)
+                cr.set_source_rgba(0.08, 0.08, 0.10, 0.96 * p_alpha)
+                cr.fill()
+
+                # Specular highlight
+                cr.new_path()
+                cr.arc(px - pupil_r * 0.28, py - pupil_r * 0.32, pupil_r * 0.28, 0, 2 * math.pi)
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.55 * p_alpha)
+                cr.fill()
 
     def _draw_analog(self, cr, w, h, now, digital_inset=False):
         cx, cy = w / 2.0, h / 2.0
@@ -2108,6 +2309,16 @@ class ClockWindow(Gtk.Window):
         # Date window (before hands)
         if self.show_date:
             self._draw_date_window(cr, cx, cy, r, now, t, stud_r, x_3_inner)
+
+        # Eyes — midpoint between centre and the actual marker position
+        # x_3_inner and y_6_top are the inner edges of the 3/6 markers (already computed above)
+        if self.show_eyes:
+            if digital_inset:
+                # Both mode: midpoint between centre and 9 (left side; bottom taken by inset)
+                self._draw_eyes(cr, cx - x_3_inner / 2, cy, r * 0.13)
+            else:
+                # Pure analog: midpoint between centre and 6 (bottom)
+                self._draw_eyes(cr, cx, (cy + y_6_top) / 2, r * 0.13)
 
         # Digital inset (before hands)
         if digital_inset:
@@ -2281,9 +2492,11 @@ class ClockWindow(Gtk.Window):
         show_d = self.show_date
         pad_x  = tw * 0.10; pad_y = th * 0.30
         g      = th * 0.18
+        eye_r  = th * 0.27 if self.show_eyes else 0.0
 
         rows_h = th
-        if show_d: rows_h += g + dh
+        if self.show_eyes: rows_h += g + eye_r * 2.0
+        if show_d:         rows_h += g + dh
 
         box_w = min(max(tw, dw if show_d else tw) + pad_x * 2, self.size - 16)
         box_h = rows_h + pad_y * 2
@@ -2298,6 +2511,10 @@ class ClockWindow(Gtk.Window):
 
         y = by + pad_y
         self._draw_text(cr, cx, y, time_str, time_size, t['digital']); y += th
+        if self.show_eyes:
+            y += g
+            self._draw_eyes(cr, cx, y + eye_r, eye_r)
+            y += eye_r * 2.0
         if show_d:
             y += g
             self._draw_text(cr, cx, y, date_str, date_size, t['marks'], alpha=0.75)
@@ -2348,9 +2565,11 @@ class ClockWindow(Gtk.Window):
         time_str = now.strftime(time_fmt)
         dh, dw, cw, igap, total_w = self._7seg_layout()
         pad_y  = max(22, dh * 0.30)
-        show_d = self.show_date
-        dh2    = max(6, dh * 0.28)
-        total_h = dh + pad_y * 2 + (dh2 + igap * 2 if show_d else 0)
+        show_d  = self.show_date
+        dh2     = max(6, dh * 0.28)
+        eye_r   = dh * 0.22 if self.show_eyes else 0.0
+        eyes_h  = eye_r * 2.0 + igap * 2 if self.show_eyes else 0.0
+        total_h = dh + pad_y * 2 + eyes_h + (dh2 + igap * 2 if show_d else 0)
 
         # Background box
         face   = t['face']
@@ -2376,10 +2595,14 @@ class ClockWindow(Gtk.Window):
                 self._draw_7seg_char(cr, x, start_y, dw, dh, ch, seg_on, seg_off)
                 x += dw + igap
 
+        if self.show_eyes:
+            eyes_y = start_y + dh + igap
+            self._draw_eyes(cr, w / 2, eyes_y + eye_r, eye_r)
+
         if show_d:
             date_str  = now.strftime('%a %d %b')
             date_size = max(6, int(dh2 * 0.80))
-            date_y    = start_y + dh + igap * 2
+            date_y    = start_y + dh + eyes_h + igap * 2
             self._draw_text(cr, w / 2, date_y, date_str, date_size,
                             t['marks'], alpha=0.70, font='DejaVu Sans Bold')
 
@@ -2645,6 +2868,9 @@ class ClockManager:
             for w in self.windows:
                 w.apply_click_through(True)
 
+        screen = Gdk.Screen.get_default()
+        screen.connect('monitors-changed', self._on_monitors_changed)
+
         self._build_tray()
         self._tracker_panel  = None
         GLib.timeout_add(1000, self._tick)
@@ -2669,6 +2895,11 @@ class ClockManager:
         else:
             state = mon_data if mon_data else shared.copy()
         return state
+
+    def _on_monitors_changed(self, screen):
+        for win in self.windows:
+            win._sync_monitor_geom()
+            win.queue_draw()
 
     def save_window_state(self, win, data):
         # Always save full state to monitor file

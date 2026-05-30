@@ -2,8 +2,9 @@ Package: desktop-clock
 Version: 1.0.0
 Architecture: all
 Maintainer: Brendan <myredroom@gmail.com>
-Depends: python3, python3-gi, python3-cairo, gir1.2-gtk-3.0, gir1.2-pango-1.0
+Depends: python3, python3-gi, python3-cairo, gir1.2-gtk-3.0, gir1.2-pango-1.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0
 Description: Analog/digital desktop clock
  A Python GTK3 desktop clock with analog and digital display modes,
  alarms, timers, snap-to-corner, and per-monitor position memory.
  Runs as a lightweight always-on-top overlay with a system tray icon.
+ HomieLab Tracker integration requires a local HomieLab Tracker instance.
