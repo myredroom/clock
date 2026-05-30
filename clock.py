@@ -1303,9 +1303,9 @@ THEMES = {
 SIZES         = {'Small': 160, 'Medium': 260, 'Large': 360, 'XLarge': 480}
 MODES         = ['Analog', 'Digital', 'Both']
 MARKER_STYLES = ['Marks', 'Numbers', 'Roman']
+EYE_STYLES    = ['x11', 'feline']
 HAND_STYLES   = ['Classic', 'Deco', 'Modern']
 ROMAN         = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII']
-WIN_MODES     = ['Normal', 'Hidden']
 DIGITAL_STYLES = ['Font', '7 Seg', 'Split']
 DIGITAL_FONTS  = ['DejaVu Sans Bold', 'DejaVu Sans Mono Bold',
                    'Ubuntu Bold', 'Liberation Sans Bold', 'FreeMono Bold']
@@ -1334,6 +1334,7 @@ class ClockWindow(Gtk.Window):
         self.show_seconds  = bool(state.get('show_seconds', True))
         self.show_date     = bool(state.get('show_date', True))
         self.show_eyes     = bool(state.get('show_eyes', False))
+        self.eye_style     = state.get('eye_style', 'x11')
         self.marker_style  = state.get('marker_style', 'Marks')
         self.hand_style    = state.get('hand_style', 'Classic')
         self.digital_style = state.get('digital_style', 'Font')
@@ -1441,7 +1442,7 @@ class ClockWindow(Gtk.Window):
         data = {'x': x, 'y': y, 'size_name': size_name, 'theme_name': theme_name,
                 'opacity': self.opacity_level, 'mode': self.mode,
                 'show_seconds': self.show_seconds, 'show_date': self.show_date,
-                'show_eyes': self.show_eyes,
+                'show_eyes': self.show_eyes, 'eye_style': self.eye_style,
                 'marker_style': self.marker_style, 'hand_style': self.hand_style,
                 'digital_style': self.digital_style, 'digital_font': self.digital_font,
                 'window_mode': self.window_mode}
@@ -1506,22 +1507,18 @@ class ClockWindow(Gtk.Window):
             nx = max(l, min(int(event.x_root - ox), r - cw))
             ny = max(t, min(int(event.y_root - oy), b - ch))
             self.move(nx, ny)
+        else:
+            self.queue_draw()
 
     # ── Right-click menu ──────────────────────────────────────────────
 
     def _show_menu(self, event):
         menu = Gtk.Menu()
 
-        # Window mode submenu
-        win_item = Gtk.MenuItem(label='This monitor')
-        win_sub  = Gtk.Menu()
-        for label, val in [('Normal','normal'),('Hide','hidden')]:
-            mi = Gtk.CheckMenuItem(label=label)
-            mi.set_active(self.window_mode == val)
-            mi.connect('activate', lambda i, v=val: self.set_window_mode(v) if i.get_active() else None)
-            win_sub.append(mi)
-        win_item.set_submenu(win_sub)
-        menu.append(win_item)
+        hide_item = Gtk.CheckMenuItem(label='Hide clock')
+        hide_item.set_active(self.window_mode == 'hidden')
+        hide_item.connect('activate', lambda i: self.set_window_mode('hidden' if i.get_active() else 'normal'))
+        menu.append(hide_item)
 
         alarms_item = Gtk.MenuItem(label='Alarms…')
         alarms_item.connect('activate', lambda _: self.manager.open_alarm_manager(self))
@@ -1579,6 +1576,16 @@ class ClockWindow(Gtk.Window):
         eyes_item.set_active(self.show_eyes)
         eyes_item.connect('activate', self._toggle_eyes)
         menu.append(eyes_item)
+
+        eye_style_item = Gtk.MenuItem(label='Eye style')
+        eye_style_sub  = Gtk.Menu()
+        for _es in EYE_STYLES:
+            _ei = Gtk.CheckMenuItem(label=_es.title())
+            _ei.set_active(_es == self.eye_style)
+            _ei.connect('activate', self._set_eye_style, _es)
+            eye_style_sub.append(_ei)
+        eye_style_item.set_submenu(eye_style_sub)
+        menu.append(eye_style_item)
 
         mid_item = Gtk.CheckMenuItem(label='Show monitor ID')
         mid_item.set_active(self.manager.show_monitor_id)
@@ -1673,6 +1680,12 @@ class ClockWindow(Gtk.Window):
         if self.mode == 'Digital': self._apply_window_size()
         self._save_all(); self.queue_draw()
 
+    def _set_eye_style(self, item, name):
+        if item.get_active():
+            self.eye_style = name
+            self._save_all()
+            self.queue_draw()
+
     def _set_marker_style(self, item, name):
         if item.get_active(): self.marker_style = name; self._save_all(); self.queue_draw()
 
@@ -1765,7 +1778,7 @@ class ClockWindow(Gtk.Window):
         dw, dh    = self._text_size(cr, date_str,  date_size)
         n      = self._active_alarm_count()
         show_d = self.show_date
-        pad_x  = tw * 0.10; pad_y = th * 0.30
+        pad_x  = tw * 0.10; pad_y = th * 0.55
         g      = th * 0.18
         bs     = max(14, th * 0.55) if n > 0 else 0
         eye_r  = th * 0.27 if self.show_eyes else 0.0
@@ -1797,7 +1810,7 @@ class ClockWindow(Gtk.Window):
     def _7seg_content_size(self):
         dh, dw, cw, igap, total_w = self._7seg_layout()
         pad_x = max(4.0, total_w * 0.04)
-        pad_y = max(22, dh * 0.30)
+        pad_y = max(28, dh * 0.55)
         box_h = dh + pad_y * 2
         if self.show_eyes: box_h += dh * 0.22 * 2.0 + igap * 2
         if self.show_date: box_h += max(6, dh * 0.28) + igap * 2
@@ -2092,66 +2105,109 @@ class ClockWindow(Gtk.Window):
             self._eye_move_frames = random.randint(40, 120)  # 2-6 s between drifts
 
     def _draw_eyes(self, cr, ecx, ecy, eye_r):
-        """Draw a pair of xeyes-style eyes — tracking when mouse is on this monitor, idle otherwise."""
         spacing = eye_r * 2.2
         wx, wy  = self.get_position()
         _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
-
         g = self.monitor_geom
         mouse_here = g.x <= mx < g.x + g.width and g.y <= my < g.y + g.height
-
-        # Eye shape: portrait (taller than wide)
-        sx = 0.76   # horizontal scale — narrower
-        sy = 1.0    # vertical scale   — full height
-
-        blink     = self._eye_blink
-        open_frac = max(0.04, 1.0 - blink)  # how open: 1=fully open, ~0=closed
+        open_frac  = max(0.04, 1.0 - self._eye_blink)
 
         for sign in (-1, 1):
             ox = ecx + sign * spacing / 2
             oy = ecy
+            if mouse_here:
+                angle = math.atan2(my - (wy + oy), mx - (wx + ox))
+                tfrac = min(1.0, math.hypot(mx - (wx + ox), my - (wy + oy)) / (eye_r * 3.0))
+            else:
+                angle = self._eye_angle
+                tfrac = self._eye_travel
+            style = self.eye_style
+            if style == 'feline':
+                self._draw_eye_feline(cr, ox, oy, eye_r, open_frac, angle, tfrac)
+            else:
+                self._draw_eye_x11(cr, ox, oy, eye_r, open_frac, angle, tfrac)
 
-            # new_path() prevents Cairo adding a line from the text renderer's
-            # current point to the arc start (which caused the diagonal line artifact)
+    def _draw_eye_x11(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
+        sx = 0.76
+        cr.new_path()
+        cr.save()
+        cr.translate(ox, oy)
+        cr.scale(sx, open_frac)
+        cr.arc(0, 0, eye_r, 0, 2 * math.pi)
+        cr.restore()
+        cr.set_source_rgba(0.96, 0.96, 0.94, 0.93)
+        cr.fill_preserve()
+        cr.set_source_rgba(0.22, 0.22, 0.22, 0.72)
+        cr.set_line_width(max(0.8, eye_r * 0.06))
+        cr.stroke()
+        if open_frac > 0.55:
+            p_alpha = min(1.0, (open_frac - 0.55) / 0.45)
+            pupil_r = eye_r * 0.40
+            px = ox + (eye_r * sx - pupil_r) * 0.88 * tfrac * math.cos(angle)
+            py = oy + (eye_r      - pupil_r) * 0.88 * tfrac * math.sin(angle)
+            cr.new_path()
+            cr.arc(px, py, pupil_r, 0, 2 * math.pi)
+            cr.set_source_rgba(0.08, 0.08, 0.10, 0.96 * p_alpha)
+            cr.fill()
+            cr.new_path()
+            cr.arc(px - pupil_r * 0.28, py - pupil_r * 0.32, pupil_r * 0.28, 0, 2 * math.pi)
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.55 * p_alpha)
+            cr.fill()
+
+    def _draw_eye_feline(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
+        hw = eye_r * 1.0
+        hh = eye_r * 0.52
+
+        def _almond(scale_y=open_frac):
             cr.new_path()
             cr.save()
             cr.translate(ox, oy)
-            cr.scale(sx, sy * open_frac)
-            cr.arc(0, 0, eye_r, 0, 2 * math.pi)
+            cr.scale(1.0, scale_y)
+            cr.move_to(-hw, 0)
+            cr.curve_to(-hw * 0.3, -hh * 1.5,  hw * 0.3, -hh * 1.5,  hw, 0)
+            cr.curve_to( hw * 0.3,  hh,        -hw * 0.3,  hh,        -hw, 0)
+            cr.close_path()
             cr.restore()
-            cr.set_source_rgba(0.96, 0.96, 0.94, 0.93)
-            cr.fill_preserve()
-            cr.set_source_rgba(0.22, 0.22, 0.22, 0.72)
-            cr.set_line_width(max(0.8, eye_r * 0.06))
-            cr.stroke()
 
-            # Pupil — only when eye is open enough to see it
-            if open_frac > 0.55:
-                if mouse_here:
-                    angle = math.atan2(my - (wy + oy), mx - (wx + ox))
-                    dist  = math.hypot(mx - (wx + ox), my - (wy + oy))
-                    # Pupil reaches near edge once mouse is ~3 eye radii away
-                    tfrac = min(1.0, dist / (eye_r * 3.0))
-                else:
-                    angle = self._eye_angle
-                    tfrac = self._eye_travel
+        # Fill eyeball
+        _almond()
+        cr.set_source_rgba(0.97, 0.95, 0.90, 0.96)
+        cr.fill()
 
-                pupil_r = eye_r * 0.40
-                px = ox + (eye_r * sx - pupil_r) * 0.88 * tfrac * math.cos(angle)
-                py = oy + (eye_r      - pupil_r) * 0.88 * tfrac * math.sin(angle)
-
-                p_alpha = min(1.0, (open_frac - 0.55) / 0.45)
-
+        # Iris + slit clipped to almond so neither leaks past the lower lid
+        cr.save()
+        _almond()
+        cr.clip()
+        if open_frac > 0.35:
+            p_alpha = min(1.0, (open_frac - 0.35) / 0.65)
+            cr.new_path()
+            cr.save()
+            cr.translate(ox, oy); cr.scale(1.0, open_frac)
+            cr.arc(0, 0, eye_r * 0.58, 0, 2 * math.pi)
+            cr.restore()
+            cr.set_source_rgba(0.72, 0.48, 0.06, 0.72 * p_alpha)
+            cr.fill()
+            slit_cx = ox + (hw * 0.42) * tfrac * math.cos(angle)
+            slit_cy = oy + (hh * 0.35) * tfrac * math.sin(angle) * open_frac
+            slit_h  = hh * 0.88 * open_frac
+            slit_w  = max(1.0, eye_r * 0.09)
+            if slit_h > 0:
                 cr.new_path()
-                cr.arc(px, py, pupil_r, 0, 2 * math.pi)
-                cr.set_source_rgba(0.08, 0.08, 0.10, 0.96 * p_alpha)
+                cr.save()
+                cr.translate(slit_cx, slit_cy)
+                cr.scale(slit_w / slit_h, 1.0)
+                cr.arc(0, 0, slit_h, 0, 2 * math.pi)
+                cr.restore()
+                cr.set_source_rgba(0.04, 0.02, 0.01, 0.96 * p_alpha)
                 cr.fill()
+        cr.restore()  # release clip
 
-                # Specular highlight
-                cr.new_path()
-                cr.arc(px - pupil_r * 0.28, py - pupil_r * 0.32, pupil_r * 0.28, 0, 2 * math.pi)
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.55 * p_alpha)
-                cr.fill()
+        # Outline drawn on top of iris/slit
+        _almond()
+        cr.set_source_rgba(0.14, 0.10, 0.06, 0.88)
+        cr.set_line_width(max(0.8, eye_r * 0.07))
+        cr.stroke()
+
 
     def _draw_analog(self, cr, w, h, now, digital_inset=False):
         cx, cy = w / 2.0, h / 2.0
@@ -2378,23 +2434,31 @@ class ClockWindow(Gtk.Window):
         # Ghost colour: border colour at low alpha (matches any theme)
         br, bg, bb = t['border'][0], t['border'][1], t['border'][2]
 
-        # Alarm bell — always visible, ghost when no alarms active
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        wx, wy = self.get_position()
+        mlx, mly = mx - wx, my - wy
+
+        # Alarm bell — between 1 and 2 markers, halfway to the edge
         n = self._active_alarm_count()
-        bell_rgba  = (0.90, 0.15, 0.15, 0.95) if n > 0 else (br, bg, bb, 0.10)
         bell_size  = max(12, r * 0.221)
-        bell_x, bell_y = cx, cy - r * 0.45
+        _ba        = (1.5 / 6.0) * math.pi   # 1:30 clockwise from 12
+        bell_x     = cx + r * 0.48 * math.sin(_ba)
+        bell_y     = cy - r * 0.48 * math.cos(_ba)
+        bell_hover = math.hypot(mlx - bell_x, mly - bell_y) < bell_size * 0.8
+        bell_rgba  = (0.90, 0.15, 0.15, 0.95) if n > 0 else ((0.90, 0.15, 0.15, 0.35) if bell_hover else (br, bg, bb, 0.10))
         self._draw_bell(cr, bell_x, bell_y, bell_size, bell_rgba,
                         rotate=math.pi / 4, count=n if n > 0 else 0)
         self._bell_draw_pos = (bell_x, bell_y)
         self._bell_hit_r    = bell_size * 0.6
 
-        # Timer hourglass — always visible, ghost when no timers running
+        # Timer hourglass — between 10 and 11 markers, halfway to the edge
         nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
-        hg_rgba   = (0.95, 0.50, 0.10, 0.95) if nt > 0 else (br, bg, bb, 0.10)
-        angle_10  = (10 / 6.0) * math.pi
-        hg_x = cx + r * 0.45 * math.sin(angle_10)
-        hg_y = cy - r * 0.45 * math.cos(angle_10)
-        hg_size = max(10, r * 0.18)
+        _ha      = (10.5 / 6.0) * math.pi   # 10:30 clockwise from 12
+        hg_x     = cx + r * 0.48 * math.sin(_ha)
+        hg_y     = cy - r * 0.48 * math.cos(_ha)
+        hg_size  = max(10, r * 0.18)
+        hg_hover = math.hypot(mlx - hg_x, mly - hg_y) < hg_size * 0.8
+        hg_rgba  = (0.95, 0.50, 0.10, 0.95) if nt > 0 else ((0.95, 0.50, 0.10, 0.35) if hg_hover else (br, bg, bb, 0.10))
         self._draw_hourglass(cr, hg_x, hg_y, hg_size, hg_rgba,
                              count=nt if nt > 0 else 0)
         self._hg_draw_pos = (hg_x, hg_y)
@@ -2490,7 +2554,7 @@ class ClockWindow(Gtk.Window):
         dw, dh    = self._text_size(cr, date_str,  date_size)
 
         show_d = self.show_date
-        pad_x  = tw * 0.10; pad_y = th * 0.30
+        pad_x  = tw * 0.10; pad_y = th * 0.55
         g      = th * 0.18
         eye_r  = th * 0.27 if self.show_eyes else 0.0
 
@@ -2521,8 +2585,8 @@ class ClockWindow(Gtk.Window):
 
         # Icons above the time text, in the top padding
         br_c, bg_c, bb_c = t['border'][0], t['border'][1], t['border'][2]
-        icon_size = max(7, pad_y * 0.68)
-        icon_y    = by + pad_y * 0.48
+        icon_size = max(10, pad_y * 0.75)
+        icon_y    = by + pad_y * 0.56
         text_x    = cx - tw / 2.0
 
         # Measure partial strings to find colon / digit-group x positions
@@ -2547,8 +2611,13 @@ class ClockWindow(Gtk.Window):
             bell_x = text_x + w_hh * 0.5
             hg_x   = text_x + w_hh + w_col + w_mm * 0.5
 
-        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n > 0 else (br_c, bg_c, bb_c, 0.10)
-        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else (br_c, bg_c, bb_c, 0.10)
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        wx, wy = self.get_position()
+        mlx, mly = mx - wx, my - wy
+        bell_hover = math.hypot(mlx - bell_x, mly - icon_y) < icon_size * 0.8
+        hg_hover   = math.hypot(mlx - hg_x,   mly - icon_y) < icon_size * 0.8
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n > 0 else ((0.90, 0.15, 0.15, 0.35) if bell_hover else (br_c, bg_c, bb_c, 0.10))
+        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else ((0.95, 0.50, 0.10, 0.35) if hg_hover   else (br_c, bg_c, bb_c, 0.10))
         self._draw_bell(cr, bell_x, icon_y, icon_size, bell_rgba,
                         rotate=math.pi / 4, count=n if n > 0 else 0)
         self._draw_hourglass(cr, hg_x, icon_y, icon_size, hg_rgba,
@@ -2564,7 +2633,7 @@ class ClockWindow(Gtk.Window):
         time_fmt = '%H:%M:%S' if self.show_seconds else '%H:%M'
         time_str = now.strftime(time_fmt)
         dh, dw, cw, igap, total_w = self._7seg_layout()
-        pad_y  = max(22, dh * 0.30)
+        pad_y  = max(28, dh * 0.55)
         show_d  = self.show_date
         dh2     = max(6, dh * 0.28)
         eye_r   = dh * 0.22 if self.show_eyes else 0.0
@@ -2609,16 +2678,21 @@ class ClockWindow(Gtk.Window):
         # Icons at top — ghost colour matches off-segment colour
         n  = self._active_alarm_count()
         nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
-        icon_size = max(8, pad_y * 0.68)
-        icon_y    = (h - total_h) / 2 + pad_y * 0.48
+        icon_size = max(10, pad_y * 0.75)
+        icon_y    = (h - total_h) / 2 + pad_y * 0.56
         if self.show_seconds:
             bell_x = start_x + 2 * (dw + igap) + cw * 0.5
             hg_x   = start_x + (2 * (dw + igap) + cw + igap + 2 * (dw + igap)) + cw * 0.5
         else:
             bell_x = start_x + dw + igap * 0.5
             hg_x   = start_x + 2 * (dw + igap) + cw + igap + dw + igap * 0.5
-        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n  > 0 else seg_off
-        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else seg_off
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        wx, wy = self.get_position()
+        mlx, mly = mx - wx, my - wy
+        bell_hover = math.hypot(mlx - bell_x, mly - icon_y) < icon_size * 0.8
+        hg_hover   = math.hypot(mlx - hg_x,   mly - icon_y) < icon_size * 0.8
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n  > 0 else ((0.90, 0.15, 0.15, 0.35) if bell_hover else seg_off)
+        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else ((0.95, 0.50, 0.10, 0.35) if hg_hover   else seg_off)
         self._draw_bell(cr, bell_x, icon_y, icon_size, bell_rgba,
                         rotate=math.pi / 4, count=n if n > 0 else 0)
         self._draw_hourglass(cr, hg_x, icon_y, icon_size, hg_rgba,
@@ -2706,8 +2780,8 @@ class ClockWindow(Gtk.Window):
         # Icons at top — ghost matches dimmed tile fg
         n  = self._active_alarm_count()
         nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
-        icon_size = max(10, icon_strip * 0.55)
-        icon_y    = (icon_strip + pad_y) / 2
+        icon_size = max(10, icon_strip * 0.75)
+        icon_y    = icon_strip * 0.56
         tile_ghost = (tile_fg[0] * 0.22, tile_fg[1] * 0.22, tile_fg[2] * 0.22, 0.30)
         tx0 = (w - total_w) / 2
         if self.show_seconds:
@@ -2716,8 +2790,13 @@ class ClockWindow(Gtk.Window):
         else:
             bell_x = tx0 + tw + t_gap * 0.5
             hg_x   = tx0 + 3 * tw + t_gap * 3.5
-        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n  > 0 else tile_ghost
-        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else tile_ghost
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        wx, wy = self.get_position()
+        mlx, mly = mx - wx, my - wy
+        bell_hover = math.hypot(mlx - bell_x, mly - icon_y) < icon_size * 0.8
+        hg_hover   = math.hypot(mlx - hg_x,   mly - icon_y) < icon_size * 0.8
+        bell_rgba = (0.90, 0.15, 0.15, 0.90) if n  > 0 else ((0.90, 0.15, 0.15, 0.35) if bell_hover else tile_ghost)
+        hg_rgba   = (0.95, 0.50, 0.10, 0.90) if nt > 0 else ((0.95, 0.50, 0.10, 0.35) if hg_hover   else tile_ghost)
         self._draw_bell(cr, bell_x, icon_y, icon_size, bell_rgba,
                         rotate=math.pi / 4, count=0)
         self._draw_hourglass(cr, hg_x, icon_y, icon_size, hg_rgba, count=0)
@@ -3028,7 +3107,7 @@ class ClockManager:
             parent=None, flags=0,
             message_type=Gtk.MessageType.INFO,
             buttons=Gtk.ButtonsType.OK,
-            text='Clock')
+            text=f'{APP_NAME}  v{APP_VERSION}')
         dlg.format_secondary_text('Desktop clock for Linux\nPython + GTK3')
         dlg.run(); dlg.destroy()
 
@@ -3046,11 +3125,10 @@ class ClockManager:
                 label += ' (Primary)'
             mon_item = Gtk.MenuItem(label=label)
             sub = Gtk.Menu()
-            for ml, mv in [('Normal', 'normal'), ('Hidden', 'hidden')]:
-                mi = Gtk.CheckMenuItem(label=ml)
-                mi.set_active(win.window_mode == mv)
-                mi.connect('activate', self._set_win_mode, win, mv)
-                sub.append(mi)
+            hide_mi = Gtk.CheckMenuItem(label='Hide clock')
+            hide_mi.set_active(win.window_mode == 'hidden')
+            hide_mi.connect('activate', lambda i, w=win: w.set_window_mode('hidden' if i.get_active() else 'normal'))
+            sub.append(hide_mi)
             sub.append(Gtk.SeparatorMenuItem())
             snap_item = Gtk.MenuItem(label='Snap to corner')
             snap_sub  = Gtk.Menu()
