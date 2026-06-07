@@ -17,6 +17,7 @@ import array
 import tempfile
 import subprocess
 import shutil
+import base64
 import ctypes
 import ctypes.util
 import re as _re
@@ -757,11 +758,12 @@ class TrackerPanelWindow(Gtk.Window):
         ucm.register_script_message_handler('hltClose')
         ucm.connect('script-message-received::hltClose', lambda *_: self.destroy())
 
-        wv = _WebKit2.WebView.new_with_user_content_manager(ucm)
-        wv.set_hexpand(True)
-        wv.set_vexpand(True)
-        wv.connect('context-menu', lambda *_: True)
-        wv.connect('decide-policy', self._on_policy)
+        self._wv = _WebKit2.WebView.new_with_user_content_manager(ucm)
+        self._wv.set_hexpand(True)
+        self._wv.set_vexpand(True)
+        self._wv.connect('context-menu', lambda *_: True)
+        self._wv.connect('decide-policy', self._on_policy)
+        self._wv.connect('key-press-event', self._on_key_press)
 
         html = f'''<!DOCTYPE html>
 <html>
@@ -799,7 +801,9 @@ class TrackerPanelWindow(Gtk.Window):
       apiKey:     "{api_key}",
       version:    "{APP_VERSION}"
     }});
-    HLTPanel.close = function() {{
+    var _origClose = HLTPanel.close.bind(HLTPanel);
+    HLTPanel.close = async function() {{
+      try {{ await _origClose(); }} catch(e) {{ console.error('[HLT] close error', e); }}
       window.webkit.messageHandlers.hltClose.postMessage('close');
     }};
     HLTPanel.open();
@@ -808,9 +812,46 @@ class TrackerPanelWindow(Gtk.Window):
 </body>
 </html>'''
 
-        wv.load_html(html, f'{url}/')
-        self.add(wv)
+        self._wv.load_html(html, f'{url}/')
+        self.add(self._wv)
+        self.connect('delete-event', self._on_delete)
         self.show_all()
+
+    def _on_key_press(self, widget, event):
+        # Intercept Ctrl+V when GTK clipboard holds an image. WebKit2GTK does
+        # not expose image items via clipboardData.items, so the panel's paste
+        # handler never sees them. We read the image here and inject it via JS.
+        if event.keyval == Gdk.KEY_v and (event.state & Gdk.ModifierType.CONTROL_MASK):
+            cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            if cb.wait_is_image_available():
+                self._inject_clipboard_image(cb)
+                return True  # Swallow — we handled it; don't paste as text
+        return False
+
+    def _inject_clipboard_image(self, cb):
+        pixbuf = cb.wait_for_image()
+        if pixbuf is None:
+            return
+        ok, png_bytes = pixbuf.save_to_bufferv('png', [], [])
+        if not ok:
+            return
+        b64 = base64.b64encode(png_bytes).decode('ascii')
+        js = (
+            "(function(){"
+            "var b='" + b64 + "';"
+            "var bin=atob(b),buf=new Uint8Array(bin.length);"
+            "for(var i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);"
+            "var f=new File([new Blob([buf],{type:'image/png'})],'paste.png',{type:'image/png'});"
+            "HLTPanel._pasteFile(f);"
+            "})();"
+        )
+        self._wv.run_javascript(js, None, None, None)
+
+    def _on_delete(self, window, event):
+        # Route WM × through JS so auto-save runs before the window closes.
+        # HLTPanel.close() (async override) will save, then fire hltClose → destroy().
+        self._wv.run_javascript('HLTPanel.close()', None, None, None)
+        return True  # Block default GTK destroy; JS triggers it via hltClose
 
     def _on_policy(self, wv, decision, dtype):
         if dtype == _WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
