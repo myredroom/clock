@@ -99,6 +99,18 @@ def save_state(data):
     except Exception:
         pass
 
+
+# ─── Fade-to-clear constants (v1.2.0, HLT desktop-clock #330) ─────────
+# Durations in milliseconds. Animation tick is 50 ms (20 fps) — same
+# rate as the eye animation. Default wait between fade-out and fade-in
+# is 5 minutes (user-configurable from the tray Fade timeout submenu).
+FADE_OUT_MS         = 10_000   # fade-out phase: 10 seconds
+FADE_IN_MS          = 120_000  # fade-in phase: 2 minutes
+FADE_FAST_IN_MS     = 2_500    # alarm/timer overrides → ~2.5 s back
+FADE_TICK_MS        = 50       # 20 fps
+FADE_WAIT_OPTIONS_MIN = (1, 5, 10, 30, 60)
+FADE_WAIT_DEFAULT_MIN = 5
+
 def monitor_state_file(geom):
     return os.path.join(DATA_DIR, f'state_monitor_{geom.x}_{geom.y}.json')
 
@@ -1399,6 +1411,17 @@ class ClockWindow(Gtk.Window):
         self._eye_move_frames = random.randint(40, 100)
         self._eye_timer_id    = None
 
+        # Fade state machine (v1.2.0, HLT desktop-clock #330)
+        # idle → fading_out (10s) → faded (T min) → fading_in (2 min) → idle
+        # Double-click on clock body (not bell/hourglass) triggers from idle.
+        # Double-click during fading_out cancels and restores baseline.
+        # Faded + fading_in are click-through ON; back to baseline = OFF.
+        # Alarm/timer fire during cycle → fast-fade-in (2.5s) and exit cycle.
+        self._fade_state             = 'idle'
+        self._fade_baseline_opacity  = None
+        self._fade_baseline_click_t  = None  # user's click-through state pre-fade
+        self._fade_state_start_ms    = 0
+
         self._build_window()
         self.props.opacity = 1.0 if self.theme is THEMES['Clear'] else self.opacity_level
 
@@ -1529,6 +1552,16 @@ class ClockWindow(Gtk.Window):
                 hx, hy = self._hg_draw_pos
                 if math.hypot(ex - hx, ey - hy) < self._hg_hit_r:
                     self.manager.open_timer_manager(self); return
+            # v1.2.0 #330 fade-to-clear cycle: double-click on the
+            # clock body (not bell/hourglass) triggers the fade. A
+            # second double-click during fading_out cancels and
+            # restores. During faded/fading_in the clock is click-
+            # through so this handler doesn't fire — the tray menu's
+            # Restore clock handles it instead.
+            if self._fade_state == 'fading_out':
+                self.fade_cancel()
+            elif self._fade_state == 'idle':
+                self.fade_start()
             return
         if event.button == 1 and self.window_mode == 'normal':
             wx, wy = self.get_position()
@@ -2953,6 +2986,119 @@ class ClockWindow(Gtk.Window):
             full = cairo.Region(cairo.RectangleInt(0, 0, self.size, self.size))
             self.input_shape_combine_region(full)
 
+    # ── Fade-to-clear cycle (v1.2.0, desktop-clock #330) ──────────────
+    # State machine driven by ClockManager._fade_tick at 50 ms. Each
+    # window holds its own state so multi-monitor clocks fade
+    # independently. The methods here mutate state and opacity; the
+    # manager-level tick decides when to call into _fade_advance().
+
+    def _fade_now_ms(self):
+        return int(GLib.get_monotonic_time() / 1000)
+
+    def fade_start(self):
+        """Idle → fading_out. Snapshots the current opacity baseline so
+        the eventual fade-in restores to whatever the user had, not
+        100%."""
+        if self._fade_state != 'idle':
+            return
+        # Snapshot baselines so we can restore exactly on cancel/end.
+        self._fade_baseline_opacity = self.props.opacity
+        self._fade_baseline_click_t = self.manager.click_through  # user's setting
+        self._fade_state = 'fading_out'
+        self._fade_state_start_ms = self._fade_now_ms()
+        self.manager._ensure_fade_tick()
+
+    def fade_cancel(self, restore_opacity=True):
+        """Cancel mid-cycle and restore baseline opacity + click-through.
+        Used by:
+          - double-click during fading_out
+          - tray menu Restore clock
+          - alarm/timer fire mid-cycle (with fast-in instead — see below)
+        """
+        if self._fade_state == 'idle':
+            return
+        self._fade_state = 'idle'
+        self._fade_state_start_ms = 0
+        if restore_opacity and self._fade_baseline_opacity is not None:
+            self.props.opacity = self._fade_baseline_opacity
+        # Only turn click-through off if the user didn't have it manually
+        # enabled before the fade started.
+        if self._fade_baseline_click_t is False:
+            self.apply_click_through(False)
+        self._fade_baseline_opacity = None
+        self._fade_baseline_click_t = None
+
+    def fade_force_fast_in(self):
+        """Alarm/timer override: jump to a fast fade-in from current
+        opacity. Used regardless of current cycle state — if we're in
+        fading_out, faded, or fading_in, this overrides with a 2.5 s
+        in to baseline."""
+        if self._fade_state == 'idle':
+            return
+        self._fade_state = 'fast_fading_in'
+        self._fade_state_start_ms = self._fade_now_ms()
+
+    def _fade_advance(self):
+        """Called by the manager tick. Returns True while cycle is
+        active (so the manager keeps the tick alive), False when this
+        window has returned to idle."""
+        if self._fade_state == 'idle':
+            return False
+        now = self._fade_now_ms()
+        elapsed = now - self._fade_state_start_ms
+        baseline = self._fade_baseline_opacity or 1.0
+        wait_ms = int(self.manager.fade_wait_minutes * 60_000)
+
+        if self._fade_state == 'fading_out':
+            t = min(1.0, elapsed / FADE_OUT_MS)
+            self.props.opacity = baseline * (1.0 - t)
+            if t >= 1.0:
+                # Transition: now invisible, switch to click-through
+                self.apply_click_through(True)
+                self._fade_state = 'faded'
+                self._fade_state_start_ms = now
+            return True
+
+        if self._fade_state == 'faded':
+            self.props.opacity = 0.0
+            if elapsed >= wait_ms:
+                self._fade_state = 'fading_in'
+                self._fade_state_start_ms = now
+            return True
+
+        if self._fade_state == 'fading_in':
+            t = min(1.0, elapsed / FADE_IN_MS)
+            self.props.opacity = baseline * t
+            if t >= 1.0:
+                # Back at baseline — exit cycle.
+                return self._fade_finish()
+            return True
+
+        if self._fade_state == 'fast_fading_in':
+            t = min(1.0, elapsed / FADE_FAST_IN_MS)
+            current_floor = self.props.opacity
+            # Smooth from whatever opacity we hit when override fired,
+            # not from absolute baseline, so the fast-in feels continuous.
+            self.props.opacity = current_floor + (baseline - current_floor) * t
+            if t >= 1.0:
+                return self._fade_finish()
+            return True
+
+        # Unknown state — return to idle defensively.
+        return self._fade_finish()
+
+    def _fade_finish(self):
+        """End-of-cycle cleanup: restore baseline opacity exactly, turn
+        click-through off (unless user had it on)."""
+        if self._fade_baseline_opacity is not None:
+            self.props.opacity = self._fade_baseline_opacity
+        if self._fade_baseline_click_t is False:
+            self.apply_click_through(False)
+        self._fade_state = 'idle'
+        self._fade_baseline_opacity = None
+        self._fade_baseline_click_t = None
+        return False
+
     def _rounded_rect(self, cr, x, y, w, h, radius):
         cr.new_sub_path()
         cr.arc(x + w - radius, y + radius,     radius, -math.pi/2, 0)
@@ -2970,6 +3116,11 @@ class ClockManager:
         self.sync            = bool(shared.get('sync_settings',   True))
         self.click_through   = bool(shared.get('click_through',   False))
         self.show_monitor_id = bool(shared.get('show_monitor_id', False))
+        # Fade timeout (v1.2.0 #330) — minutes the clock stays
+        # invisible before fading back. Default 5 min, user-settable
+        # from tray Fade timeout submenu.
+        self.fade_wait_minutes = int(shared.get('fade_wait_minutes', FADE_WAIT_DEFAULT_MIN))
+        self._fade_tick_id     = None
         self.windows          = []
         self._active_alert    = None
         self._alert_windows   = []   # all currently shown alert dialogs
@@ -3158,6 +3309,30 @@ class ClockManager:
         primary_mon = display.get_primary_monitor()
         primary_idx = next((i for i in range(display.get_n_monitors())
                             if display.get_monitor(i) == primary_mon), 0)
+
+        # ── Fade-to-clear (v1.2.0 #330) ────────────────────────────
+        # Restore clock — only shown while a fade cycle is active.
+        # Tray is the user's escape hatch when the clock is invisible
+        # or click-through, since they can't right-click the clock.
+        if self.any_window_in_fade_cycle():
+            restore_item = Gtk.MenuItem(label='Restore clock')
+            restore_item.connect('activate', lambda _: self.restore_all_clocks())
+            menu.append(restore_item)
+            menu.append(Gtk.SeparatorMenuItem())
+
+        # Fade timeout — how long the clock stays invisible before
+        # fading back. Always visible regardless of cycle state so
+        # the user can change it when they remember.
+        fade_item = Gtk.MenuItem(label=f'Fade timeout: {self.fade_wait_minutes} min')
+        fade_sub  = Gtk.Menu()
+        for opt in FADE_WAIT_OPTIONS_MIN:
+            mi = Gtk.CheckMenuItem(label=f'{opt} min')
+            mi.set_active(opt == self.fade_wait_minutes)
+            mi.connect('activate', lambda _, v=opt: self.set_fade_wait_minutes(v))
+            fade_sub.append(mi)
+        fade_item.set_submenu(fade_sub)
+        menu.append(fade_item)
+        menu.append(Gtk.SeparatorMenuItem())
 
         # Per-monitor: visibility + snap + options (when click-through active)
         for win in self.windows:
@@ -3352,6 +3527,56 @@ class ClockManager:
         for w in self.windows:
             w.apply_click_through(enabled)
 
+    # ── Fade-to-clear cycle (v1.2.0 #330) ─────────────────────────────
+    # Per-window state machines tick from one shared 50 ms timer here.
+    # The timer auto-stops when no window is in a fade cycle.
+    def _ensure_fade_tick(self):
+        if self._fade_tick_id is not None:
+            return
+        self._fade_tick_id = GLib.timeout_add(FADE_TICK_MS, self._fade_tick)
+
+    def _fade_tick(self):
+        any_active = False
+        for w in self.windows:
+            if w._fade_advance():
+                any_active = True
+        if not any_active:
+            self._fade_tick_id = None
+            return False
+        return True
+
+    def any_window_in_fade_cycle(self):
+        return any(w._fade_state != 'idle' for w in self.windows)
+
+    def restore_all_clocks(self):
+        """Tray menu Restore clock — cancel any active fade, restore
+        baseline on every window."""
+        for w in self.windows:
+            if w._fade_state != 'idle':
+                w.fade_cancel()
+
+    def force_fast_fade_in_all(self):
+        """Alarm/timer fire — accelerate fade-in to ~2.5 s on any
+        window currently in the fade cycle. No-op for windows already
+        in idle."""
+        for w in self.windows:
+            if w._fade_state != 'idle':
+                w.fade_force_fast_in()
+        if self.any_window_in_fade_cycle():
+            self._ensure_fade_tick()
+
+    def set_fade_wait_minutes(self, minutes):
+        try:
+            minutes = int(minutes)
+        except (TypeError, ValueError):
+            return
+        if minutes < 1:
+            minutes = 1
+        self.fade_wait_minutes = minutes
+        shared = load_state()
+        shared['fade_wait_minutes'] = minutes
+        save_state(shared)
+
     def _on_alert_hide(self, dlg):
         if dlg in self._alert_windows:
             self._alert_windows.remove(dlg)
@@ -3359,6 +3584,10 @@ class ClockManager:
             self._set_clock_clickthrough(False)
 
     def _fire_alarm(self, alarm):
+        # v1.2.0 #330: if any clock is currently in the fade cycle, force
+        # a fast fade-in (~2.5 s) so the user can SEE the alarm fire.
+        # A silently ringing invisible clock is the opposite of useful.
+        self.force_fast_fade_in_all()
         if alarm['style'] == 'sound':
             play_tone(alarm['tone'])
         else:
@@ -3394,6 +3623,9 @@ class ClockManager:
             schedule_rtc_wake(load_alarms(), self.timers)
 
     def _fire_timer(self, timer):
+        # v1.2.0 #330: as for alarms — bring any faded clock back fast.
+        self.force_fast_fade_in_all()
+
         def on_snooze(secs, snooze_count=0):
             self.timers.append(new_timer(
                 label=timer['label'],
