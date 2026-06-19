@@ -373,6 +373,10 @@ class AlarmEditDialog(Gtk.Dialog):
         super().__init__(title='Edit Alarm' if alarm else 'New Alarm',
                          transient_for=parent, modal=True)
         self.set_decorated(False)
+        # v1.2.1 #481: spawned windows are always-on-top so they can't
+        # get lost behind other windows while still being deliberately
+        # placed by _find_clear_position to avoid overlap with each other.
+        self.set_keep_above(True)
         self.alarm = alarm.copy() if alarm else new_alarm()
         self.add_button('Close', Gtk.ResponseType.CANCEL)
         self.add_button('Save',  Gtk.ResponseType.OK)
@@ -885,6 +889,8 @@ class AlarmManagerWindow(Gtk.Window):
         self.set_default_size(460, 280)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_border_width(0)
+        # v1.2.1 #481: always-on-top.
+        self.set_keep_above(True)
         self.alarms = load_alarms()
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1081,6 +1087,8 @@ class TimerEditDialog(Gtk.Dialog):
     def __init__(self, parent):
         super().__init__(title='New Timer', transient_for=parent, modal=True)
         self.set_decorated(False)
+        # v1.2.1 #481: always-on-top.
+        self.set_keep_above(True)
         self.add_button('Close', Gtk.ResponseType.CANCEL)
         self.add_button('Start', Gtk.ResponseType.OK)
         self.get_content_area().pack_start(_make_titlebar(self, 'New Timer'), False, False, 0)
@@ -1151,6 +1159,8 @@ class TimerManagerWindow(Gtk.Window):
         self.set_default_size(480, 240)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_border_width(0)
+        # v1.2.1 #481: always-on-top.
+        self.set_keep_above(True)
         self.manager = manager
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         _setup_undecorated_window(self, vbox)
@@ -1417,10 +1427,13 @@ class ClockWindow(Gtk.Window):
         # Double-click during fading_out cancels and restores baseline.
         # Faded + fading_in are click-through ON; back to baseline = OFF.
         # Alarm/timer fire during cycle → fast-fade-in (2.5s) and exit cycle.
+        # v1.2.1 (#482): wait minutes is captured at fade_start so changes
+        # to the manager setting mid-cycle don't affect in-flight cycles.
         self._fade_state             = 'idle'
         self._fade_baseline_opacity  = None
         self._fade_baseline_click_t  = None  # user's click-through state pre-fade
         self._fade_state_start_ms    = 0
+        self._fade_wait_min_snapshot = None
 
         self._build_window()
         self.props.opacity = 1.0 if self.theme is THEMES['Clear'] else self.opacity_level
@@ -2998,12 +3011,17 @@ class ClockWindow(Gtk.Window):
     def fade_start(self):
         """Idle → fading_out. Snapshots the current opacity baseline so
         the eventual fade-in restores to whatever the user had, not
-        100%."""
+        100%. Also snapshots `fade_wait_minutes` (v1.2.1 #482) so that
+        changing the setting mid-cycle doesn't shorten/lengthen any
+        in-flight cycle — each cycle uses the value that was in effect
+        when it started. Multi-monitor: each clock captures
+        independently."""
         if self._fade_state != 'idle':
             return
         # Snapshot baselines so we can restore exactly on cancel/end.
-        self._fade_baseline_opacity = self.props.opacity
-        self._fade_baseline_click_t = self.manager.click_through  # user's setting
+        self._fade_baseline_opacity  = self.props.opacity
+        self._fade_baseline_click_t  = self.manager.click_through  # user's setting
+        self._fade_wait_min_snapshot = self.manager.fade_wait_minutes
         self._fade_state = 'fading_out'
         self._fade_state_start_ms = self._fade_now_ms()
         self.manager._ensure_fade_tick()
@@ -3025,8 +3043,9 @@ class ClockWindow(Gtk.Window):
         # enabled before the fade started.
         if self._fade_baseline_click_t is False:
             self.apply_click_through(False)
-        self._fade_baseline_opacity = None
-        self._fade_baseline_click_t = None
+        self._fade_baseline_opacity  = None
+        self._fade_baseline_click_t  = None
+        self._fade_wait_min_snapshot = None
 
     def fade_force_fast_in(self):
         """Alarm/timer override: jump to a fast fade-in from current
@@ -3047,7 +3066,12 @@ class ClockWindow(Gtk.Window):
         now = self._fade_now_ms()
         elapsed = now - self._fade_state_start_ms
         baseline = self._fade_baseline_opacity or 1.0
-        wait_ms = int(self.manager.fade_wait_minutes * 60_000)
+        # v1.2.1 #482: use the snapshot, not the live manager value, so
+        # mid-cycle changes don't shorten/lengthen this cycle.
+        wait_min = self._fade_wait_min_snapshot
+        if wait_min is None:
+            wait_min = self.manager.fade_wait_minutes
+        wait_ms = int(wait_min * 60_000)
 
         if self._fade_state == 'fading_out':
             t = min(1.0, elapsed / FADE_OUT_MS)
@@ -3095,8 +3119,9 @@ class ClockWindow(Gtk.Window):
         if self._fade_baseline_click_t is False:
             self.apply_click_through(False)
         self._fade_state = 'idle'
-        self._fade_baseline_opacity = None
-        self._fade_baseline_click_t = None
+        self._fade_baseline_opacity  = None
+        self._fade_baseline_click_t  = None
+        self._fade_wait_min_snapshot = None
         return False
 
     def _rounded_rect(self, cr, x, y, w, h, radius):
