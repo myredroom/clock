@@ -975,10 +975,11 @@ class AlarmManagerWindow(Gtk.Window):
 
 # ─── Timer ────────────────────────────────────────────────────────────
 
-def new_timer(label='Timer', total_secs=60, tone=3, never_give_up=False, snooze_count=0):
+def new_timer(label='Timer', total_secs=60, tone=3, never_give_up=False, snooze_count=0, notes=''):
     return {
         'id':            str(uuid.uuid4()),
         'label':         label,
+        'notes':         notes,
         'total':         total_secs,
         'remaining':     total_secs,
         'state':         'running',
@@ -1128,7 +1129,13 @@ class TimerEditDialog(Gtk.Dialog):
         grid.attach(tone_box, 1, row, 3, 1); row += 1
 
         self._never_give_up = Gtk.CheckButton(label='Never give up (sound until dismissed)')
-        grid.attach(self._never_give_up, 0, row, 4, 1)
+        grid.attach(self._never_give_up, 0, row, 4, 1); row += 1
+
+        grid.attach(Gtk.Label(label='Notes:', xalign=0), 0, row, 1, 1)
+        self.notes_entry = Gtk.Entry()
+        self.notes_entry.set_placeholder_text('Optional reminder note')
+        self.notes_entry.set_hexpand(True)
+        grid.attach(self.notes_entry, 1, row, 3, 1)
 
         self.get_content_area().add(grid)
         self.show_all()
@@ -1149,6 +1156,7 @@ class TimerEditDialog(Gtk.Dialog):
             total_secs=total,
             tone=self._tone_combo.get_active() + 1,
             never_give_up=self._never_give_up.get_active(),
+            notes=self.notes_entry.get_text().strip(),
         )
 
 class TimerManagerWindow(Gtk.Window):
@@ -1275,13 +1283,15 @@ class TimerHoverOverlay(Gtk.Window):
         outer.add(self._box)
         self.add(outer)
 
-    def update(self, timers, clock_x, clock_y, clock_w, clock_h, screen_h):
+    def update(self, timers, clock_x, clock_y, clock_w, clock_h, screen_h, alarms=None):
         now_ts = datetime.now().timestamp()
         active = [t for t in timers if t['state'] != 'completed' or
                   (t['completed_at'] and now_ts - t['completed_at'] < 5)]
+        active_alarms = [a for a in (alarms or []) if a.get('enabled')]
         for child in self._box.get_children():
             self._box.remove(child)
-        if not active:
+        self.resize(1, 1)
+        if not active and not active_alarms:
             self.hide(); return
         for t in active:
             if t['state'] == 'completed':
@@ -1293,6 +1303,17 @@ class TimerHoverOverlay(Gtk.Window):
             lbl = Gtk.Label(label=text, xalign=0)
             lbl.get_style_context().add_class('t-row')
             if css != 't-row': lbl.get_style_context().add_class(css)
+            self._box.pack_start(lbl, False, False, 0)
+            notes = t.get('notes', '').strip()
+            if notes:
+                nlbl = Gtk.Label(label=f'    {notes}', xalign=0)
+                nlbl.get_style_context().add_class('t-row')
+                nlbl.get_style_context().add_class('t-paused')
+                self._box.pack_start(nlbl, False, False, 0)
+        for a in active_alarms:
+            text = f'🔔  {a["label"]}  {a["time"]}'
+            lbl = Gtk.Label(label=text, xalign=0)
+            lbl.get_style_context().add_class('t-row')
             self._box.pack_start(lbl, False, False, 0)
         self._box.show_all(); self.show_all()
         self.move(clock_x, clock_y + clock_h + 4)
@@ -1366,7 +1387,7 @@ THEMES = {
 SIZES         = {'Small': 160, 'Medium': 260, 'Large': 360, 'XLarge': 480}
 MODES         = ['Analog', 'Digital', 'Both']
 MARKER_STYLES = ['Marks', 'Numbers', 'Roman']
-EYE_STYLES    = ['x11', 'feline']
+EYE_STYLES    = ['x11', 'disney', 'authentic human', 'puppy dog', 'marvel']
 HAND_STYLES   = ['Classic', 'Deco', 'Modern']
 ROMAN         = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII']
 DIGITAL_STYLES = ['Font', '7 Seg', 'Split']
@@ -1397,7 +1418,8 @@ class ClockWindow(Gtk.Window):
         self.show_seconds  = bool(state.get('show_seconds', True))
         self.show_date     = bool(state.get('show_date', True))
         self.show_eyes     = bool(state.get('show_eyes', False))
-        self.eye_style     = state.get('eye_style', 'x11')
+        _es                = state.get('eye_style', 'x11')
+        self.eye_style     = _es if _es in EYE_STYLES else 'x11'
         self.marker_style  = state.get('marker_style', 'Marks')
         self.hand_style    = state.get('hand_style', 'Classic')
         self.digital_style = state.get('digital_style', 'Font')
@@ -1529,7 +1551,8 @@ class ClockWindow(Gtk.Window):
         if not self._resizing and self.window_mode == 'normal':
             self._saved_pos = (event.x, event.y)
             self._save_all(event.x, event.y)
-        self._sync_monitor_geom()
+        if not self._resizing:
+            self._sync_monitor_geom()
 
     # ── Input handling ────────────────────────────────────────────────
 
@@ -1541,15 +1564,17 @@ class ClockWindow(Gtk.Window):
             self._hover_overlay.hide()
 
     def _update_hover_overlay(self):
-        active = [t for t in self.manager.timers if t['state'] != 'completed' or
-                  (t['completed_at'] and
-                   datetime.now().timestamp() - t['completed_at'] < 5)]
-        if not active:
+        now_ts = datetime.now().timestamp()
+        active_timers = [t for t in self.manager.timers if t['state'] != 'completed' or
+                         (t['completed_at'] and now_ts - t['completed_at'] < 5)]
+        enabled_alarms = [a for a in load_alarms() if a.get('enabled')]
+        if not active_timers and not enabled_alarms:
             self._hover_overlay.hide(); return
         x, y = self.get_position()
         w, h = self.get_size()
         screen_h = self.monitor_geom.y + self.monitor_geom.height
-        self._hover_overlay.update(self.manager.timers, x, y, w, h, screen_h)
+        self._hover_overlay.update(self.manager.timers, x, y, w, h, screen_h,
+                                   alarms=enabled_alarms)
 
     def _on_key_press(self, widget, event):
         pass
@@ -1829,6 +1854,8 @@ class ClockWindow(Gtk.Window):
 
     def _finish_resize(self, nx, ny):
         self.move(nx, ny)
+        self._sync_monitor_geom()
+        self.apply_click_through(self.manager.click_through)
         self._resizing = False
         self._saved_pos = (nx, ny)
         self._save_all(nx, ny)
@@ -2209,10 +2236,14 @@ class ClockWindow(Gtk.Window):
                 angle = self._eye_angle
                 tfrac = self._eye_travel
             style = self.eye_style
-            if style == 'feline':
-                self._draw_eye_feline(cr, ox, oy, eye_r, open_frac, angle, tfrac)
-            else:
-                self._draw_eye_x11(cr, ox, oy, eye_r, open_frac, angle, tfrac)
+            _dispatch = {
+                'disney':          self._draw_eye_disney,
+                'authentic human': self._draw_eye_human,
+                'puppy dog':       self._draw_eye_puppy,
+                'marvel':          self._draw_eye_marvel,
+            }
+            _dispatch.get(style, self._draw_eye_x11)(
+                cr, ox, oy, eye_r, open_frac, angle, tfrac)
 
     def _draw_eye_x11(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
         sx = 0.76
@@ -2241,59 +2272,196 @@ class ClockWindow(Gtk.Window):
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.55 * p_alpha)
             cr.fill()
 
-    def _draw_eye_feline(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
-        hw = eye_r * 1.0
-        hh = eye_r * 0.52
+    def _draw_eye_disney(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
+        """Large round eyes, massive iris, classic Disney sparkle."""
+        sx      = 0.88
+        iris_r  = eye_r * 0.64
 
-        def _almond(scale_y=open_frac):
-            cr.new_path()
-            cr.save()
-            cr.translate(ox, oy)
-            cr.scale(1.0, scale_y)
+        def _sclera():
+            cr.new_path(); cr.save()
+            cr.translate(ox, oy); cr.scale(sx, open_frac)
+            cr.arc(0, 0, eye_r, 0, 2 * math.pi); cr.restore()
+
+        _sclera()
+        cr.set_source_rgba(0.98, 0.97, 0.96, 0.97); cr.fill_preserve()
+        cr.set_source_rgba(0.10, 0.06, 0.04, 0.95)
+        cr.set_line_width(max(1.0, eye_r * 0.11)); cr.stroke()
+
+        if open_frac < 0.20: return
+        p_alpha = min(1.0, (open_frac - 0.20) / 0.80)
+        offset  = (eye_r * sx - iris_r * 0.85) * 0.55 * tfrac
+        px = ox + offset * math.cos(angle)
+        py = oy + offset * math.sin(angle)
+
+        cr.save(); _sclera(); cr.clip()
+        # Deep blue-purple iris
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.16, 0.22, 0.60, 0.92 * p_alpha); cr.fill()
+        # Dark pupil
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r * 0.50, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.04, 0.02, 0.02, 0.97 * p_alpha); cr.fill()
+        cr.restore()
+
+        # Large Disney sparkle — top-left of iris
+        hl_r = iris_r * 0.30
+        hlx  = px - iris_r * 0.28
+        hly  = py - iris_r * 0.33 * open_frac
+        cr.new_path(); cr.arc(hlx, hly, hl_r, 0, 2 * math.pi)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.92 * p_alpha); cr.fill()
+        # Small secondary sparkle
+        cr.new_path()
+        cr.arc(hlx + iris_r * 0.35, hly + iris_r * 0.22 * open_frac, hl_r * 0.44, 0, 2 * math.pi)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.68 * p_alpha); cr.fill()
+
+    def _draw_eye_human(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
+        """Realistic almond shape, green-grey iris, subtle catch-light."""
+        hw = eye_r * 1.00; hh = eye_r * 0.58
+
+        def _almond(sy=None):
+            sy = sy if sy is not None else open_frac
+            cr.new_path(); cr.save(); cr.translate(ox, oy); cr.scale(1.0, sy)
             cr.move_to(-hw, 0)
-            cr.curve_to(-hw * 0.3, -hh * 1.5,  hw * 0.3, -hh * 1.5,  hw, 0)
-            cr.curve_to( hw * 0.3,  hh,        -hw * 0.3,  hh,        -hw, 0)
-            cr.close_path()
+            cr.curve_to(-hw * 0.35, -hh * 1.15, hw * 0.35, -hh * 1.15, hw, 0)
+            cr.curve_to( hw * 0.30,  hh * 0.80,-hw * 0.30,  hh * 0.80,-hw, 0)
+            cr.close_path(); cr.restore()
+
+        _almond()
+        cr.set_source_rgba(0.97, 0.96, 0.95, 0.96); cr.fill_preserve()
+        cr.set_source_rgba(0.18, 0.14, 0.11, 0.82)
+        cr.set_line_width(max(0.7, eye_r * 0.065)); cr.stroke()
+
+        if open_frac < 0.22: return
+        p_alpha = min(1.0, (open_frac - 0.22) / 0.78)
+        iris_r  = hh * 0.88
+        offset  = (hw - iris_r) * 0.65 * tfrac
+        px = ox + offset * math.cos(angle)
+        py = oy + offset * math.sin(angle) * 0.70
+
+        cr.save(); _almond(); cr.clip()
+        # Green-grey iris
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.24, 0.38, 0.32, 0.88 * p_alpha); cr.fill()
+        # Dark limbal ring
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.08, 0.08, 0.08, 0.40 * p_alpha)
+        cr.set_line_width(max(0.5, iris_r * 0.12)); cr.stroke()
+        # Pupil
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r * 0.42, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.05, 0.04, 0.04, 0.95 * p_alpha); cr.fill()
+        # Upper lid shadow
+        cr.new_path(); cr.save(); cr.translate(ox, oy); cr.scale(1.0, open_frac)
+        cr.move_to(-hw, 0)
+        cr.curve_to(-hw*0.35, -hh*1.15, hw*0.35, -hh*1.15, hw, 0)
+        cr.line_to(hw, -hh*0.20)
+        cr.curve_to(hw*0.35,-hh*1.32,-hw*0.35,-hh*1.32,-hw,-hh*0.20)
+        cr.close_path(); cr.restore()
+        cr.set_source_rgba(0.40, 0.28, 0.22, 0.18 * p_alpha); cr.fill()
+        cr.restore()
+
+        # Small natural catch-light
+        cr.new_path()
+        cr.arc(px - iris_r*0.18, py - iris_r*0.24*open_frac, iris_r*0.16, 0, 2*math.pi)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.60 * p_alpha); cr.fill()
+        # Re-stroke outline over iris
+        _almond()
+        cr.set_source_rgba(0.16, 0.12, 0.10, 0.88)
+        cr.set_line_width(max(0.8, eye_r * 0.07)); cr.stroke()
+
+    def _draw_eye_puppy(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
+        """Huge pleading eyes, watery whites, amber iris, droopy upper lid."""
+        sx = 0.92
+        iris_r = eye_r * 0.72
+
+        def _sclera():
+            cr.new_path(); cr.save()
+            cr.translate(ox, oy); cr.scale(sx, open_frac)
+            cr.arc(0, 0, eye_r, 0, 2 * math.pi); cr.restore()
+
+        _sclera()
+        cr.set_source_rgba(0.93, 0.96, 0.99, 0.96); cr.fill_preserve()  # watery blue-white
+        cr.set_source_rgba(0.14, 0.10, 0.08, 0.88)
+        cr.set_line_width(max(1.0, eye_r * 0.09)); cr.stroke()
+
+        if open_frac < 0.18: return
+        p_alpha = min(1.0, (open_frac - 0.18) / 0.82)
+        offset  = (eye_r * sx - iris_r * 0.90) * 0.48 * tfrac
+        px = ox + offset * math.cos(angle)
+        py = oy + offset * math.sin(angle)
+
+        cr.save(); _sclera(); cr.clip()
+        # Warm amber-brown iris
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.58, 0.35, 0.08, 0.90 * p_alpha); cr.fill()
+        # Lighter inner iris ring (depth)
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r * 0.68, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.72, 0.48, 0.14, 0.45 * p_alpha); cr.fill()
+        # Large round pupil
+        cr.new_path(); cr.save(); cr.translate(px, py); cr.scale(1.0, open_frac)
+        cr.arc(0, 0, iris_r * 0.48, 0, 2 * math.pi); cr.restore()
+        cr.set_source_rgba(0.04, 0.02, 0.01, 0.97 * p_alpha); cr.fill()
+        # Droopy upper lid shadow
+        cr.new_path()
+        cr.rectangle(ox - eye_r * 1.5, oy - eye_r * open_frac * 3,
+                     eye_r * 3.0, eye_r * open_frac * 1.55)
+        cr.set_source_rgba(0.30, 0.18, 0.08, 0.28 * p_alpha); cr.fill()
+        cr.restore()
+
+        # Big shiny highlight — upper-left, watery
+        hl_r = iris_r * 0.34
+        hlx  = px - iris_r * 0.30
+        hly  = py - iris_r * 0.36 * open_frac
+        cr.new_path(); cr.arc(hlx, hly, hl_r, 0, 2 * math.pi)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.94 * p_alpha); cr.fill()
+        cr.new_path()
+        cr.arc(hlx + iris_r * 0.40, hly + iris_r * 0.26 * open_frac, hl_r * 0.50, 0, 2 * math.pi)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.68 * p_alpha); cr.fill()
+
+    def _draw_eye_marvel(self, cr, ox, oy, eye_r, open_frac, angle, tfrac):
+        """Spider-Man style: angular white lens, gaze shown via reflection."""
+        hw = eye_r * 1.05; hh = eye_r * 0.66
+
+        def _lens():
+            cr.new_path(); cr.save(); cr.translate(ox, oy); cr.scale(1.0, open_frac)
+            cr.move_to(-hw, 0)
+            cr.curve_to(-hw*0.20, -hh*1.18, hw*0.12, -hh*1.22, hw, 0)
+            cr.curve_to( hw*0.12,  hh*1.08,-hw*0.20,  hh*1.04,-hw, 0)
+            cr.close_path(); cr.restore()
+
+        # White/silver lens fill
+        _lens()
+        cr.set_source_rgba(0.88, 0.92, 0.96, 0.97); cr.fill()
+
+        if open_frac > 0.20:
+            p_alpha = min(1.0, (open_frac - 0.20) / 0.80)
+            # Subtle inner shadow opposite gaze direction (depth/roundness)
+            cr.save(); _lens(); cr.clip()
+            cr.new_path(); cr.save()
+            cr.translate(ox - hw * 0.14 * tfrac * math.cos(angle),
+                         oy - hh * 0.10 * tfrac * math.sin(angle) * open_frac)
+            cr.scale(hw * 0.72, hh * 0.54 * open_frac)
+            cr.arc(0, 0, 1.0, 0, 2 * math.pi); cr.restore()
+            cr.set_source_rgba(0.55, 0.65, 0.80, 0.32 * p_alpha); cr.fill()
             cr.restore()
+            # Bright reflection oval offset toward gaze
+            rx = ox + hw * 0.30 * tfrac * math.cos(angle)
+            ry = oy + hh * 0.20 * tfrac * math.sin(angle) * open_frac
+            cr.new_path(); cr.save()
+            cr.translate(rx, ry - hh * 0.12 * open_frac)
+            cr.scale(hw * 0.20, hh * 0.13 * open_frac)
+            cr.arc(0, 0, 1.0, 0, 2 * math.pi); cr.restore()
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.82 * p_alpha); cr.fill()
 
-        # Fill eyeball
-        _almond()
-        cr.set_source_rgba(0.97, 0.95, 0.90, 0.96)
-        cr.fill()
-
-        # Iris + slit clipped to almond so neither leaks past the lower lid
-        cr.save()
-        _almond()
-        cr.clip()
-        if open_frac > 0.35:
-            p_alpha = min(1.0, (open_frac - 0.35) / 0.65)
-            cr.new_path()
-            cr.save()
-            cr.translate(ox, oy); cr.scale(1.0, open_frac)
-            cr.arc(0, 0, eye_r * 0.58, 0, 2 * math.pi)
-            cr.restore()
-            cr.set_source_rgba(0.72, 0.48, 0.06, 0.72 * p_alpha)
-            cr.fill()
-            slit_cx = ox + (hw * 0.42) * tfrac * math.cos(angle)
-            slit_cy = oy + (hh * 0.35) * tfrac * math.sin(angle) * open_frac
-            slit_h  = hh * 0.88 * open_frac
-            slit_w  = max(1.0, eye_r * 0.09)
-            if slit_h > 0:
-                cr.new_path()
-                cr.save()
-                cr.translate(slit_cx, slit_cy)
-                cr.scale(slit_w / slit_h, 1.0)
-                cr.arc(0, 0, slit_h, 0, 2 * math.pi)
-                cr.restore()
-                cr.set_source_rgba(0.04, 0.02, 0.01, 0.96 * p_alpha)
-                cr.fill()
-        cr.restore()  # release clip
-
-        # Outline drawn on top of iris/slit
-        _almond()
-        cr.set_source_rgba(0.14, 0.10, 0.06, 0.88)
-        cr.set_line_width(max(0.8, eye_r * 0.07))
-        cr.stroke()
+        # Strong outline: near-black navy
+        _lens()
+        cr.set_source_rgba(0.06, 0.06, 0.12, 0.95)
+        cr.set_line_width(max(1.0, eye_r * 0.10)); cr.stroke()
 
 
     def _draw_analog(self, cr, w, h, now, digital_inset=False):
@@ -2618,8 +2786,9 @@ class ClockWindow(Gtk.Window):
         if not self.manager.show_monitor_id: return
         mid = self.monitor_idx + 1
         fill_c, text_c = self._id_badge_colors(t['face'])
-        badge_r = max(7, int(h * 0.12))
-        bcx = w - badge_r - 5;  bcy = h - badge_r - 5
+        corner_r = 14
+        badge_r = max(5, min(corner_r - 4, int(min(w, h) * 0.07)))
+        bcx = w - 2 - corner_r;  bcy = h - 2 - corner_r
         cr.arc(bcx, bcy, badge_r, 0, 2 * math.pi)
         cr.set_source_rgba(*fill_c); cr.fill()
         layout = PangoCairo.create_layout(cr)
@@ -2996,7 +3165,8 @@ class ClockWindow(Gtk.Window):
         if enabled:
             self.input_shape_combine_region(cairo.Region())
         else:
-            full = cairo.Region(cairo.RectangleInt(0, 0, self.size, self.size))
+            cw, ch = self._clock_size()
+            full = cairo.Region(cairo.RectangleInt(0, 0, cw, ch))
             self.input_shape_combine_region(full)
 
     # ── Fade-to-clear cycle (v1.2.0, desktop-clock #330) ──────────────
