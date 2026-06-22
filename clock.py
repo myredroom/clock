@@ -2847,7 +2847,7 @@ class ClockWindow(Gtk.Window):
             seg_n = (dc[0], dc[1], dc[2], 0.95)
             colon_dots = (_ORANGE, seg_n) if self.monitor_idx == 0 else (_ORANGE, _ORANGE)
             text_left = cx - tw / 2.0
-            dot_r = max(2.0, th * 0.055)
+            dot_r = max(3.0, th * 0.10)
             col_w = measure_w(':')
             if self.show_seconds:
                 colon_xs = [
@@ -2857,6 +2857,9 @@ class ClockWindow(Gtk.Window):
             else:
                 colon_xs = [text_left + measure_w(time_str[:2]) + col_w * 0.5]
             for col_x in colon_xs:
+                cr.set_source_rgba(face[0], face[1], face[2], face_alpha)
+                cr.rectangle(col_x - col_w * 0.5, time_top_y, col_w, th)
+                cr.fill()
                 cr.new_path(); cr.set_source_rgba(*colon_dots[0])
                 cr.arc(col_x, time_top_y + th * 0.28, dot_r, 0, 2 * math.pi); cr.fill()
                 cr.new_path(); cr.set_source_rgba(*colon_dots[1])
