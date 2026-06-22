@@ -2784,7 +2784,7 @@ class ClockWindow(Gtk.Window):
 
     def _draw_digital_badge(self, cr, w, h, t):
         if not self.manager.show_monitor_id: return
-        if self.digital_style == '7 Seg': return  # colon dots encode monitor ID instead
+        return  # all digital styles encode monitor ID via colon dot colours instead
         mid = self.monitor_idx + 1
         fill_c, text_c = self._id_badge_colors(t['face'])
         corner_r = 14
@@ -2830,8 +2830,31 @@ class ClockWindow(Gtk.Window):
         cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
         self._rounded_rect(cr, bx, by, box_w, box_h, 14); cr.stroke()
 
-        y = by + pad_y
+        time_top_y = by + pad_y
+        y = time_top_y
         self._draw_text(cr, cx, y, time_str, time_size, t['digital']); y += th
+
+        # Monitor ID: overlay coloured dots on the colon(s) to replace the badge
+        _ORANGE = (1.0, 0.55, 0.0, 0.95)
+        if self.manager.show_monitor_id:
+            dc = t['digital']
+            seg_n = (dc[0], dc[1], dc[2], 0.95)
+            colon_dots = (_ORANGE, seg_n) if self.monitor_idx == 0 else (_ORANGE, _ORANGE)
+            text_left = cx - tw / 2.0
+            dot_r = max(2.0, th * 0.055)
+            col_w = measure_w(':')
+            if self.show_seconds:
+                colon_xs = [
+                    text_left + measure_w(time_str[:2]) + col_w * 0.5,
+                    text_left + measure_w(time_str[:5]) + col_w * 0.5,
+                ]
+            else:
+                colon_xs = [text_left + measure_w(time_str[:2]) + col_w * 0.5]
+            for col_x in colon_xs:
+                cr.new_path(); cr.set_source_rgba(*colon_dots[0])
+                cr.arc(col_x, time_top_y + th * 0.28, dot_r, 0, 2 * math.pi); cr.fill()
+                cr.new_path(); cr.set_source_rgba(*colon_dots[1])
+                cr.arc(col_x, time_top_y + th * 0.72, dot_r, 0, 2 * math.pi); cr.fill()
         if self.show_eyes:
             y += g
             self._draw_eyes(cr, cx, y + eye_r, eye_r)
@@ -3029,9 +3052,17 @@ class ClockWindow(Gtk.Window):
         time_x  = (w - total_w) / 2
         time_y  = icon_strip + pad_y
 
+        # Monitor ID encoded via colon dot colours
+        _ORANGE = (1.0, 0.55, 0.0, 0.95)
+        if self.manager.show_monitor_id:
+            colon_dots = (_ORANGE, tile_fg) if self.monitor_idx == 0 else (_ORANGE, _ORANGE)
+        else:
+            colon_dots = None
+
         for ch in time_str:
             self._draw_split_tile(cr, time_x, time_y, tw, th, ch,
-                                  tile_bg, tile_fg, split_c, tile_r)
+                                  tile_bg, tile_fg, split_c, tile_r,
+                                  colon_dots if ch == ':' else None)
             time_x += tw + t_gap
 
         if show_d:
@@ -3081,18 +3112,25 @@ class ClockWindow(Gtk.Window):
         self._bell_draw_pos = (bell_x, icon_y); self._bell_hit_r = icon_size * 0.8
         self._hg_draw_pos   = (hg_x,   icon_y); self._hg_hit_r  = icon_size * 0.8
 
-    def _draw_split_tile(self, cr, x, y, tw, th, char, tile_bg, tile_fg, split_c, tile_r):
+    def _draw_split_tile(self, cr, x, y, tw, th, char, tile_bg, tile_fg, split_c, tile_r, dot_colors=None):
         # Tile background
         cr.set_source_rgba(*tile_bg)
         self._rounded_rect(cr, x, y, tw, th, tile_r); cr.fill()
-        # Character
-        font_size = max(5, int(th * 0.68))
-        layout = PangoCairo.create_layout(cr)
-        layout.set_text(char, -1)
-        layout.set_font_description(Pango.FontDescription(f'Ubuntu Bold {font_size}'))
-        lw, lh = layout.get_pixel_size()
-        cr.move_to(x + tw / 2 - lw / 2, y + th / 2 - lh / 2)
-        cr.set_source_rgba(*tile_fg); PangoCairo.show_layout(cr, layout)
+        # Character — colon draws coloured dots when dot_colors provided
+        if char == ':' and dot_colors is not None:
+            dot_r = max(2.0, tw * 0.13)
+            cr.new_path(); cr.set_source_rgba(*dot_colors[0])
+            cr.arc(x + tw / 2, y + th * 0.30, dot_r, 0, 2 * math.pi); cr.fill()
+            cr.new_path(); cr.set_source_rgba(*dot_colors[1])
+            cr.arc(x + tw / 2, y + th * 0.70, dot_r, 0, 2 * math.pi); cr.fill()
+        else:
+            font_size = max(5, int(th * 0.68))
+            layout = PangoCairo.create_layout(cr)
+            layout.set_text(char, -1)
+            layout.set_font_description(Pango.FontDescription(f'Ubuntu Bold {font_size}'))
+            lw, lh = layout.get_pixel_size()
+            cr.move_to(x + tw / 2 - lw / 2, y + th / 2 - lh / 2)
+            cr.set_source_rgba(*tile_fg); PangoCairo.show_layout(cr, layout)
         # Split line — the defining detail
         cr.set_source_rgba(*split_c)
         cr.set_line_width(max(0.8, th * 0.020))
