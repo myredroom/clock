@@ -2849,13 +2849,7 @@ class ClockWindow(Gtk.Window):
             text_left = cx - tw / 2.0
             dot_r = max(3.0, th * 0.10)
             col_w = measure_w(':')
-            if self.show_seconds:
-                colon_xs = [
-                    text_left + measure_w(time_str[:2]) + col_w * 0.5,
-                    text_left + measure_w(time_str[:5]) + col_w * 0.5,
-                ]
-            else:
-                colon_xs = [text_left + measure_w(time_str[:2]) + col_w * 0.5]
+            colon_xs = [text_left + measure_w(time_str[:2]) + col_w * 0.5]
             for col_x in colon_xs:
                 cr.set_source_rgba(face[0], face[1], face[2], face_alpha)
                 cr.rectangle(col_x - col_w * 0.5, time_top_y, col_w, th)
