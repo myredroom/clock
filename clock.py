@@ -2840,24 +2840,33 @@ class ClockWindow(Gtk.Window):
         y = time_top_y
         self._draw_text(cr, cx, y, time_str, time_size, t['digital']); y += th
 
-        # Monitor ID: overlay coloured dots on the colon(s) to replace the badge
+        # Monitor ID: overlay coloured dots on the first colon to replace the badge.
+        # The dots are sized and positioned from the font's OWN colon glyph (its ink
+        # extents) so they match the size and vertical placement of the unmodified
+        # colon(s) — drawing our own fixed-radius circles made them look pasted on.
         _ORANGE = (1.0, 0.55, 0.0, 0.95)
         if self.manager.show_monitor_id:
             dc = t['digital']
             seg_n = (dc[0], dc[1], dc[2], 0.95)
             colon_dots = (_ORANGE, seg_n) if self.monitor_idx == 0 else (_ORANGE, _ORANGE)
             text_left = cx - tw / 2.0
-            dot_r = max(3.0, th * 0.10)
-            col_w = measure_w(':')
-            colon_xs = [text_left + measure_w(time_str[:2]) + col_w * 0.5]
-            for col_x in colon_xs:
-                cr.set_source_rgba(face[0], face[1], face[2], face_alpha)
-                cr.rectangle(col_x - col_w * 0.5, time_top_y, col_w, th)
-                cr.fill()
-                cr.new_path(); cr.set_source_rgba(*colon_dots[0])
-                cr.arc(col_x, time_top_y + th * 0.28, dot_r, 0, 2 * math.pi); cr.fill()
-                cr.new_path(); cr.set_source_rgba(*colon_dots[1])
-                cr.arc(col_x, time_top_y + th * 0.72, dot_r, 0, 2 * math.pi); cr.fill()
+            colon_lay = PangoCairo.create_layout(cr)
+            colon_lay.set_text(':', -1)
+            colon_lay.set_font_description(Pango.FontDescription(f'{self.digital_font} {time_size}'))
+            ink, logical = colon_lay.get_pixel_extents()
+            colon_left = text_left + measure_w(time_str[:2])
+            dot_r  = max(1.5, ink.width / 2.0)            # match the font colon's dot size
+            dot_cx = colon_left + ink.x + ink.width / 2.0  # centre on the colon's ink
+            top_cy = time_top_y + ink.y + ink.width / 2.0
+            bot_cy = time_top_y + ink.y + ink.height - ink.width / 2.0
+            # Erase the font's first colon across its advance box, then redraw matched dots
+            cr.set_source_rgba(face[0], face[1], face[2], face_alpha)
+            cr.rectangle(colon_left, time_top_y, logical.width, th)
+            cr.fill()
+            cr.new_path(); cr.set_source_rgba(*colon_dots[0])
+            cr.arc(dot_cx, top_cy, dot_r, 0, 2 * math.pi); cr.fill()
+            cr.new_path(); cr.set_source_rgba(*colon_dots[1])
+            cr.arc(dot_cx, bot_cy, dot_r, 0, 2 * math.pi); cr.fill()
         if self.show_eyes:
             y += g
             self._draw_eyes(cr, cx, y + eye_r, eye_r)
