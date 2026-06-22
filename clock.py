@@ -2840,33 +2840,44 @@ class ClockWindow(Gtk.Window):
         y = time_top_y
         self._draw_text(cr, cx, y, time_str, time_size, t['digital']); y += th
 
-        # Monitor ID: overlay coloured dots on the first colon to replace the badge.
-        # The dots are sized and positioned from the font's OWN colon glyph (its ink
-        # extents) so they match the size and vertical placement of the unmodified
-        # colon(s) — drawing our own fixed-radius circles made them look pasted on.
+        # Monitor ID: recolour the FIRST colon's two dots to encode monitor identity.
+        # We re-paint the font's OWN ':' glyph (clipped to each dot's half) rather than
+        # drawing our own circles — so the dots keep the font's real shape (DejaVu Sans
+        # Bold draws SQUARE colon dots, other fonts round) and match the unmodified
+        # colon exactly. Monitor 1 = orange top + normal bottom; Monitor 2 = both orange.
         _ORANGE = (1.0, 0.55, 0.0, 0.95)
         if self.manager.show_monitor_id:
             dc = t['digital']
             seg_n = (dc[0], dc[1], dc[2], 0.95)
-            colon_dots = (_ORANGE, seg_n) if self.monitor_idx == 0 else (_ORANGE, _ORANGE)
+            top_c = _ORANGE
+            bot_c = seg_n if self.monitor_idx == 0 else _ORANGE
             text_left = cx - tw / 2.0
             colon_lay = PangoCairo.create_layout(cr)
             colon_lay.set_text(':', -1)
             colon_lay.set_font_description(Pango.FontDescription(f'{self.digital_font} {time_size}'))
             ink, logical = colon_lay.get_pixel_extents()
             colon_left = text_left + measure_w(time_str[:2])
-            dot_r  = max(1.5, ink.width / 2.0)            # match the font colon's dot size
-            dot_cx = colon_left + ink.x + ink.width / 2.0  # centre on the colon's ink
-            top_cy = time_top_y + ink.y + ink.width / 2.0
-            bot_cy = time_top_y + ink.y + ink.height - ink.width / 2.0
-            # Erase the font's first colon across its advance box, then redraw matched dots
+            split_y = time_top_y + ink.y + ink.height / 2.0  # gap between the two dots
+
+            def _repaint_colon(color, y_top, y_bot):
+                cr.save()
+                cr.rectangle(colon_left, y_top, logical.width, y_bot - y_top)
+                cr.clip()
+                lay = PangoCairo.create_layout(cr)
+                lay.set_text(':', -1)
+                lay.set_font_description(Pango.FontDescription(f'{self.digital_font} {time_size}'))
+                cr.move_to(colon_left, time_top_y)
+                cr.set_source_rgba(*color)
+                PangoCairo.show_layout(cr, lay)
+                cr.restore()
+
+            # Erase the font's first colon, then repaint each dot in its own colour
+            # using the real glyph shape, clipped to the top / bottom half.
             cr.set_source_rgba(face[0], face[1], face[2], face_alpha)
             cr.rectangle(colon_left, time_top_y, logical.width, th)
             cr.fill()
-            cr.new_path(); cr.set_source_rgba(*colon_dots[0])
-            cr.arc(dot_cx, top_cy, dot_r, 0, 2 * math.pi); cr.fill()
-            cr.new_path(); cr.set_source_rgba(*colon_dots[1])
-            cr.arc(dot_cx, bot_cy, dot_r, 0, 2 * math.pi); cr.fill()
+            _repaint_colon(top_c, time_top_y, split_y)
+            _repaint_colon(bot_c, split_y, time_top_y + th)
         if self.show_eyes:
             y += g
             self._draw_eyes(cr, cx, y + eye_r, eye_r)
