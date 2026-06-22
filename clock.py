@@ -2830,6 +2830,12 @@ class ClockWindow(Gtk.Window):
         cr.set_source_rgba(*t['border']); cr.set_line_width(2.0)
         self._rounded_rect(cr, bx, by, box_w, box_h, 14); cr.stroke()
 
+        def measure_w(s):
+            lay = PangoCairo.create_layout(cr)
+            lay.set_text(s, -1)
+            lay.set_font_description(Pango.FontDescription(f'{self.digital_font} {time_size}'))
+            return lay.get_pixel_size()[0]
+
         time_top_y = by + pad_y
         y = time_top_y
         self._draw_text(cr, cx, y, time_str, time_size, t['digital']); y += th
@@ -2868,13 +2874,6 @@ class ClockWindow(Gtk.Window):
         icon_size = max(10, pad_y * 0.75)
         icon_y    = by + pad_y * 0.56
         text_x    = cx - tw / 2.0
-
-        # Measure partial strings to find colon / digit-group x positions
-        def measure_w(s):
-            lay = PangoCairo.create_layout(cr)
-            lay.set_text(s, -1)
-            lay.set_font_description(Pango.FontDescription(f'{self.digital_font} {time_size}'))
-            return lay.get_pixel_size()[0]
 
         n  = self._active_alarm_count()
         nt = sum(1 for tmr in self.manager.timers if tmr['state'] == 'running')
