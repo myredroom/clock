@@ -2784,6 +2784,7 @@ class ClockWindow(Gtk.Window):
 
     def _draw_digital_badge(self, cr, w, h, t):
         if not self.manager.show_monitor_id: return
+        if self.digital_style == '7 Seg': return  # colon dots encode monitor ID instead
         mid = self.monitor_idx + 1
         fill_c, text_c = self._id_badge_colors(t['face'])
         corner_r = 14
@@ -2909,12 +2910,19 @@ class ClockWindow(Gtk.Window):
         seg_on  = (dc[0], dc[1], dc[2], 0.95)
         seg_off = (dc[0] * 0.28, dc[1] * 0.28, dc[2] * 0.28, 0.18)
 
+        # Colon dot colors encode monitor ID — replaces badge for 7 Seg style
+        _ORANGE = (1.0, 0.55, 0.0, 0.95)
+        if self.manager.show_monitor_id:
+            colon_dots = (_ORANGE, seg_on) if self.monitor_idx == 0 else (_ORANGE, _ORANGE)
+        else:
+            colon_dots = None  # both dots use seg_on (normal)
+
         start_y = (h - total_h) / 2 + pad_y
         start_x = (w - total_w) / 2
         x = start_x
         for ch in time_str:
             if ch == ':':
-                self._draw_7seg_char(cr, x, start_y, cw, dh, ch, seg_on, seg_off)
+                self._draw_7seg_char(cr, x, start_y, cw, dh, ch, seg_on, seg_off, colon_dots)
                 x += cw + igap
             else:
                 self._draw_7seg_char(cr, x, start_y, dw, dh, ch, seg_on, seg_off)
@@ -2956,11 +2964,16 @@ class ClockWindow(Gtk.Window):
         self._bell_draw_pos = (bell_x, icon_y); self._bell_hit_r = icon_size * 0.8
         self._hg_draw_pos   = (hg_x,   icon_y); self._hg_hit_r  = icon_size * 0.8
 
-    def _draw_7seg_char(self, cr, x, y, cw, ch, char, seg_on, seg_off):
+    def _draw_7seg_char(self, cr, x, y, cw, ch, char, seg_on, seg_off, dot_colors=None):
         if char == ':':
             dot_r = max(1.5, cw * 0.22)
-            cr.set_source_rgba(*seg_on)
+            top_c = dot_colors[0] if dot_colors else seg_on
+            bot_c = dot_colors[1] if dot_colors else seg_on
+            cr.new_path()
+            cr.set_source_rgba(*top_c)
             cr.arc(x + cw / 2, y + ch * 0.30, dot_r, 0, 2 * math.pi); cr.fill()
+            cr.new_path()
+            cr.set_source_rgba(*bot_c)
             cr.arc(x + cw / 2, y + ch * 0.70, dot_r, 0, 2 * math.pi); cr.fill()
             return
         pattern = SEG_PATTERNS.get(char, '')
