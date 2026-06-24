@@ -279,6 +279,19 @@ RTC_WAKE_HELPER = '/usr/lib/desktop-clock/rtcwake-helper'
 _rtc_wake_warned = False
 
 
+def _rtc_is_local():
+    """True if the hardware RTC holds LOCAL time (e.g. a Windows dual-boot box),
+    per /etc/adjtime's third line. The kernel's wakealarm expects a UTC epoch, so
+    when the RTC is local we must shift the armed time by the UTC offset or the
+    alarm lands in the chip's past and is silently dropped."""
+    try:
+        with open('/etc/adjtime') as f:
+            lines = f.read().splitlines()
+        return len(lines) >= 3 and lines[2].strip().upper() == 'LOCAL'
+    except Exception:
+        return False
+
+
 def _warn_rtc_wake(detail, loud):
     """Surface an RTC-arming failure instead of swallowing it.
 
@@ -329,7 +342,20 @@ def schedule_rtc_wake(alarms, timers=None):
         if earliest is None or target < earliest:
             earliest = target
     # 0 = clear any previously-armed alarm when nothing is pending.
-    arg = str(int(earliest.timestamp()) - 60) if earliest else '0'
+    if earliest:
+        epoch = int(earliest.timestamp()) - 60
+        if _rtc_is_local():
+            # RTC holds local time (Windows dual-boot): shift by the UTC offset AT
+            # THE ALARM TIME (DST-correct) so the alarm registers match the chip.
+            try:
+                off = earliest.astimezone().utcoffset()
+                if off:
+                    epoch += int(off.total_seconds())
+            except Exception:
+                pass
+        arg = str(epoch)
+    else:
+        arg = '0'
     if not os.path.exists(RTC_WAKE_HELPER):
         # Not installed (e.g. running from source) — can't arm; quiet note only.
         if earliest:
