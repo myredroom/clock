@@ -1,0 +1,5 @@
+# Installed by the desktop-clock package.
+# Lets the clock (running as the user) arm the RTC wake alarm for
+# "wake from sleep" alarms without a password. Scoped to the single helper,
+# which can only set/clear the RTC wakealarm -- it cannot suspend the machine.
+brendan ALL=(root) NOPASSWD: /usr/lib/desktop-clock/rtcwake-helper

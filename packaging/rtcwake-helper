@@ -1,0 +1,12 @@
+#!/bin/sh
+# desktop-clock RTC wake helper.
+# Arms or clears the RTC wake alarm ONLY -- it never suspends the machine.
+# Usage: rtcwake-helper <epoch_seconds>   (0 or non-numeric = just clear)
+WAKEALARM=/sys/class/rtc/rtc0/wakealarm
+[ -w "$WAKEALARM" ] || exit 1
+# Must clear before setting a new value, or the kernel rejects the write.
+echo 0 > "$WAKEALARM" 2>/dev/null
+case "$1" in
+  ''|0|*[!0-9]*) exit 0 ;;
+  *) echo "$1" > "$WAKEALARM" ;;
+esac

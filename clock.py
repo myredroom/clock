@@ -8,6 +8,7 @@ import cairo
 import math
 import json
 import os
+import sys
 import signal
 import warnings
 warnings.filterwarnings('ignore', message='.*StatusIcon.*', category=DeprecationWarning)
@@ -274,9 +275,39 @@ def play_tone(tone_num):
 
 # ─── RTC wake scheduling ──────────────────────────────────────────────
 
+RTC_WAKE_HELPER = '/usr/lib/desktop-clock/rtcwake-helper'
+_rtc_wake_warned = False
+
+
+def _warn_rtc_wake(detail, loud):
+    """Surface an RTC-arming failure instead of swallowing it.
+
+    The pre-v1.2.11 bug: `sudo rtcwake` was run with capture_output and its
+    result discarded, so when it failed (no passwordless sudo once the app runs
+    as the user rather than root) wake-from-suspend failed *silently* and alarms
+    never woke the machine. Now: always log to stderr (journald); show a desktop
+    notice once per session only for the 'installed but misconfigured' case.
+    """
+    global _rtc_wake_warned
+    sys.stderr.write(f'[desktop-clock] RTC wake not armed: {detail}\n')
+    sys.stderr.flush()
+    if loud and not _rtc_wake_warned:
+        _rtc_wake_warned = True
+        if shutil.which('notify-send'):
+            try:
+                subprocess.run(
+                    ['notify-send', '-u', 'critical', 'Desktop Clock',
+                     'A "wake from sleep" alarm could not be armed — the machine '
+                     'may not wake for alarms.'],
+                    capture_output=True)
+            except Exception:
+                pass
+
+
 def schedule_rtc_wake(alarms, timers=None):
-    if not shutil.which('rtcwake'):
-        return
+    """Arm the hardware RTC to wake ~60s before the soonest enabled wake-alarm
+    (or running timer), via a tiny privileged helper the .deb installs (scoped,
+    passwordless through sudoers.d) so the GTK app itself never runs as root."""
     now      = datetime.now()
     earliest = None
     for a in alarms:
@@ -297,10 +328,22 @@ def schedule_rtc_wake(alarms, timers=None):
         target = now + timedelta(seconds=max(1, tmr['remaining']))
         if earliest is None or target < earliest:
             earliest = target
-    if earliest:
-        ts = int(earliest.timestamp()) - 60
-        subprocess.run(['sudo', 'rtcwake', '-m', 'no', '-t', str(ts)],
-                       capture_output=True)
+    # 0 = clear any previously-armed alarm when nothing is pending.
+    arg = str(int(earliest.timestamp()) - 60) if earliest else '0'
+    if not os.path.exists(RTC_WAKE_HELPER):
+        # Not installed (e.g. running from source) — can't arm; quiet note only.
+        if earliest:
+            _warn_rtc_wake(f'helper {RTC_WAKE_HELPER} not present (running from source?)',
+                           loud=False)
+        return
+    try:
+        r = subprocess.run(['sudo', '-n', RTC_WAKE_HELPER, arg],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            _warn_rtc_wake((r.stderr or '').strip() or f'helper exit {r.returncode}',
+                           loud=True)
+    except Exception as e:
+        _warn_rtc_wake(str(e), loud=True)
 
 # ─── Alert dialog ─────────────────────────────────────────────────────
 

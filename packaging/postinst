@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+HELPER=/usr/lib/desktop-clock/rtcwake-helper
+SUDOERS=/etc/sudoers.d/desktop-clock
+# Belt-and-braces (dpkg-deb --root-owner-group already sets these in the archive).
+chown root:root "$HELPER" "$SUDOERS" 2>/dev/null || true
+chmod 0755 "$HELPER" 2>/dev/null || true
+chmod 0440 "$SUDOERS" 2>/dev/null || true
+# A malformed sudoers file would break ALL sudo -- validate, and remove if bad.
+if command -v visudo >/dev/null 2>&1; then
+    if ! visudo -cf "$SUDOERS" >/dev/null 2>&1; then
+        rm -f "$SUDOERS"
+        echo "desktop-clock: sudoers snippet failed validation and was removed" >&2
+    fi
+fi
+exit 0

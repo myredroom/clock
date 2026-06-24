@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    rm -f /etc/sudoers.d/desktop-clock /usr/lib/desktop-clock/rtcwake-helper
+fi
+exit 0

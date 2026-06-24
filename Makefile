@@ -24,6 +24,17 @@ deb:
 	# Copy application
 	cp clock.py $(BUILD)/usr/share/$(PKG)/
 
+	# RTC wake helper + scoped passwordless sudoers (for "wake from sleep" alarms)
+	mkdir -p $(BUILD)/usr/lib/$(PKG)
+	mkdir -p $(BUILD)/etc/sudoers.d
+	cp packaging/rtcwake-helper $(BUILD)/usr/lib/$(PKG)/rtcwake-helper
+	chmod 755 $(BUILD)/usr/lib/$(PKG)/rtcwake-helper
+	cp packaging/sudoers-desktop-clock $(BUILD)/etc/sudoers.d/$(PKG)
+	chmod 440 $(BUILD)/etc/sudoers.d/$(PKG)
+	cp packaging/postinst $(BUILD)/DEBIAN/postinst
+	cp packaging/postrm  $(BUILD)/DEBIAN/postrm
+	chmod 755 $(BUILD)/DEBIAN/postinst $(BUILD)/DEBIAN/postrm
+
 	# Copy icons
 	cp packaging/icons/desktop-clock-48.png  $(BUILD)/usr/share/icons/hicolor/48x48/apps/$(PKG).png
 	cp packaging/icons/desktop-clock-256.png $(BUILD)/usr/share/icons/hicolor/256x256/apps/$(PKG).png
@@ -51,7 +62,7 @@ deb:
 		> $(BUILD)/usr/share/doc/$(PKG)/copyright
 
 	# Build .deb
-	dpkg-deb --build $(BUILD) $(DEB)
+	dpkg-deb --root-owner-group --build $(BUILD) $(DEB)
 	@echo "Done: $(DEB)"
 
 clean:
