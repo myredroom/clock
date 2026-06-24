@@ -3,7 +3,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Pango', '1.0')
 gi.require_version('PangoCairo', '1.0')
-from gi.repository import Gtk, GLib, Gdk, Pango, PangoCairo
+from gi.repository import Gtk, GLib, Gdk, Pango, PangoCairo, Gio
 import cairo
 import math
 import json
@@ -39,6 +39,19 @@ try:
             pass
 except Exception:
     pass
+
+# python-xlib is optional — used only to dismiss a ringing alarm with the
+# Play/Pause media key from the lock screen, via XInput2 raw key events.
+# Raw events bypass keyboard grabs (including the screen locker) and are
+# observe-only, so they never interfere with normal media use. Absent if
+# python-xlib isn't installed.
+_XLIB_OK = False
+try:
+    from Xlib import display as _xdisplay
+    from Xlib.ext import xinput as _xinput
+    _XLIB_OK = True
+except Exception:
+    _XLIB_OK = False
 
 APP_NAME        = 'Desktop Clock'
 APP_PROJECT_KEY = 'desktop-clock'
@@ -3480,6 +3493,8 @@ class ClockManager:
         # clock-restart — the RTC was previously only armed on alarm edit/dismiss,
         # so a restart left existing alarms unable to wake the machine).
         schedule_rtc_wake(load_alarms(), self.timers)
+        # Set up the media-key alarm-dismiss monitor (Play/Pause from lock screen).
+        self._setup_media_key_monitor()
         # Show tracker first-run dialog if WebKit available and not yet seen/disabled
         if _WEBKIT_AVAILABLE:
             cfg = load_tracker_config()
@@ -3934,6 +3949,7 @@ class ClockManager:
             parent = next((w for w in self.windows if w.get_visible()), self.windows[0])
             dlg = AlertDialog(alarm, self._alarm_dismissed)
             self._active_alert = dlg
+            self._media_monitor_active(True)   # allow Play/Pause dismiss while ringing
             geom = getattr(parent, 'monitor_geom', None)
             nx, ny = self._find_clear_position(300, 200, geom)
             dlg.move(nx, ny)
@@ -4055,7 +4071,100 @@ class ClockManager:
 
     def _alarm_dismissed(self, alarm):
         self._active_alert = None
+        self._media_monitor_active(False)
         for w in self.windows: w.queue_draw()
+
+    # ── Media-key alarm dismiss (Play/Pause from the lock screen) ──────────
+    def _setup_media_key_monitor(self):
+        """Watch the Play/Pause (and Stop) media keys via XInput2 raw events so a
+        ringing alarm can be dismissed from the lock screen with no login. Raw
+        events bypass keyboard grabs (incl. the locker) and are observe-only, so
+        they never consume the key or disturb normal media use. The selection is
+        toggled on only WHILE an alarm is ringing."""
+        self._xi_display = None
+        self._xi_root = None
+        self._xi_dismiss_codes = set()
+        self._xi_active = False
+        self._last_media_dismiss = 0
+        if not _XLIB_OK:
+            return
+        try:
+            d = _xdisplay.Display()
+            d.query_extension('XInputExtension')
+            root = d.screen().root
+            for ks in (0x1008FF14, 0x1008FF31, 0x1008FF15):  # XF86Audio Play/Pause/Stop
+                kc = d.keysym_to_keycode(ks)
+                if kc:
+                    self._xi_dismiss_codes.add(kc)
+            if not self._xi_dismiss_codes:
+                d.close(); return
+            self._xi_display = d
+            self._xi_root = root
+            GLib.io_add_watch(d.fileno(), GLib.IO_IN, self._on_xi_event)
+        except Exception:
+            self._xi_display = None
+
+    def _media_monitor_active(self, on):
+        d = getattr(self, '_xi_display', None)
+        if not d or bool(on) == self._xi_active:
+            return
+        try:
+            mask = (1 << _xinput.RawKeyPress) if on else 0
+            self._xi_root.xinput_select_events([(_xinput.AllDevices, mask)])
+            d.sync()
+            self._xi_active = bool(on)
+        except Exception:
+            pass
+
+    def _on_xi_event(self, source, condition):
+        d = getattr(self, '_xi_display', None)
+        if not d:
+            return False
+        try:
+            while d.pending_events() > 0:
+                ev = d.next_event()
+                if getattr(ev, 'evtype', None) != _xinput.RawKeyPress:
+                    continue
+                # XIRawEvent payload: deviceid(2) + time(4) + detail(4) -> keycode at offset 6
+                kc = int.from_bytes(ev.data[6:10], 'little')
+                if kc in self._xi_dismiss_codes:
+                    self._on_media_dismiss_key()
+        except Exception:
+            pass
+        return True   # keep the watch
+
+    def _on_media_dismiss_key(self):
+        now = GLib.get_monotonic_time()
+        if now - self._last_media_dismiss < 500_000:   # debounce 0.5 s (raw events double up)
+            return
+        self._last_media_dismiss = now
+        alert = self._active_alert
+        if alert and alert.get_visible():
+            alert._dismiss()                # stops sound + hides + _alarm_dismissed
+            self._repause_media_players()   # undo any player the same key resumed
+
+    def _repause_media_players(self):
+        """The Play/Pause that dismissed the alarm also reaches any media player
+        (e.g. Chrome) and may have resumed it. Tell every MPRIS player to Pause,
+        a moment later, so a resumed video goes quiet again."""
+        def _do():
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                res = bus.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus',
+                                    'org.freedesktop.DBus', 'ListNames', None,
+                                    GLib.VariantType('(as)'), Gio.DBusCallFlags.NONE, 800, None)
+                for nm in res.unpack()[0]:
+                    if nm.startswith('org.mpris.MediaPlayer2.'):
+                        try:
+                            bus.call_sync(nm, '/org/mpris/MediaPlayer2',
+                                          'org.mpris.MediaPlayer2.Player', 'Pause', None, None,
+                                          Gio.DBusCallFlags.NONE, 800, None)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return False
+        GLib.timeout_add(250, _do)
 
     # ── Tracker ───────────────────────────────────────────────────────
 
