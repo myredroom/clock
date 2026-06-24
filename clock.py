@@ -3476,6 +3476,10 @@ class ClockManager:
         self._build_tray()
         self._tracker_panel  = None
         GLib.timeout_add(1000, self._tick)
+        # Arm the RTC for any existing wake-alarm at startup (covers reboot /
+        # clock-restart — the RTC was previously only armed on alarm edit/dismiss,
+        # so a restart left existing alarms unable to wake the machine).
+        schedule_rtc_wake(load_alarms(), self.timers)
         # Show tracker first-run dialog if WebKit available and not yet seen/disabled
         if _WEBKIT_AVAILABLE:
             cfg = load_tracker_config()
@@ -3852,7 +3856,12 @@ class ClockManager:
             changed = True
             GLib.idle_add(self._fire_alarm, alarm.copy())
 
-        if changed: save_alarms(alarms)
+        if changed:
+            save_alarms(alarms)
+            # Re-arm the RTC for the next occurrence after a fire (e.g. a Daily
+            # alarm rolling to tomorrow). Previously only dismiss/edit re-armed,
+            # so a fired repeating alarm left the wakealarm empty until next edit.
+            schedule_rtc_wake(alarms, self.timers)
 
     def _set_clock_clickthrough(self, enabled):
         for w in self.windows:
