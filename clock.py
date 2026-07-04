@@ -1670,10 +1670,12 @@ class ClockWindow(Gtk.Window):
         self._eye_timer_id    = None
 
         # Solari split-eye state (Split digital style only, HLT #817)
-        self._sf_step   = 0      # current pupil direction 0-7 (× π/4)
-        self._sf_travel = 0.0    # binary: 0.0 centred or 0.65 peripheral
-        self._sf_flip   = False  # mid-flip visual this frame
-        self._sf_hold   = 0      # hold frames remaining
+        self._sf_step        = 0      # current pupil direction 0-7 (× π/4)
+        self._sf_travel      = 0.0    # binary: 0.0 centred or 0.65 peripheral
+        self._sf_flip        = False  # mid-flip visual this frame
+        self._sf_hold        = 0      # hold frames remaining
+        self._sf_last_mouse  = (0, 0) # last seen mouse position
+        self._sf_still_frames = 0     # consecutive frames mouse has been still
 
         # Fade state machine (v1.2.0, HLT desktop-clock #330)
         # idle → fading_out (10s) → faded (T min) → fading_in (2 min) → idle
@@ -2192,7 +2194,7 @@ class ClockWindow(Gtk.Window):
         box_w = total_w + pad_x * 2
         box_h = th + pad_y * 2 + icon_strip
         if self.show_eyes:
-            box_h += th * 0.22 * 2.0 + t_gap * 2
+            box_h += th * 0.55 + t_gap * 2
         if self.show_date:
             th2    = max(6, th * 0.50)
             tw2    = th2 * 0.70
@@ -2462,17 +2464,31 @@ class ClockWindow(Gtk.Window):
             self._eye_move_frames = random.randint(40, 120)  # 2-6 s between drifts
 
     def _update_solari_state(self):
-        """Advance Solari split-flap pupil one 45° step per cycle toward target."""
+        """Advance Solari split-flap pupil one 45° step per cycle toward target.
+        When mouse is on this monitor, target only locks in after the mouse has
+        been still for 6 frames (~300ms) — moving cursor doesn't trigger flapping."""
         _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
         g = self.monitor_geom
         mouse_here = g.x <= mx < g.x + g.width and g.y <= my < g.y + g.height
 
         if mouse_here:
+            if (mx, my) == self._sf_last_mouse:
+                self._sf_still_frames += 1
+            else:
+                self._sf_last_mouse   = (mx, my)
+                self._sf_still_frames = 0
+            if self._sf_still_frames < 6:
+                # Mouse still moving — cancel any pending step, count down hold
+                self._sf_flip = False
+                if self._sf_hold > 0:
+                    self._sf_hold -= 1
+                return
             wx, wy = self.get_position()
             cw, ch = self._clock_size()
             raw_angle = math.atan2(my - (wy + ch / 2), mx - (wx + cw / 2))
             raw_frac  = min(1.0, math.hypot(mx - (wx + cw / 2), my - (wy + ch / 2)) / (cw * 0.4))
         else:
+            self._sf_still_frames = 0
             raw_angle = self._eye_angle
             raw_frac  = self._eye_travel
 
@@ -2738,34 +2754,63 @@ class ClockWindow(Gtk.Window):
         cr.set_source_rgba(0.06, 0.06, 0.12, 0.95)
         cr.set_line_width(max(1.0, eye_r * 0.10)); cr.stroke()
 
-    def _draw_solari_eyes(self, cr, ecx, ecy, eye_r):
-        """x11 eyes with Solari split-flap pupil stepping for Split digital style."""
-        spacing   = eye_r * 2.2
-        open_frac = max(0.04, 1.0 - self._eye_blink)
-        angle     = self._sf_step * (math.pi / 4)
-        tfrac     = self._sf_travel
-        sx        = 0.76
+    def _draw_solari_eyes(self, cr, ecx, ecy, eye_th, tile_bg, tile_fg, split_c, t_gap):
+        """Two Solari split-flap tiles styled as eyes — white circle on dark tile,
+        pupil snaps to 8 discrete directions. Blink = flip to closed (horizontal dash)."""
+        eye_tw   = eye_th
+        tile_r   = max(2.0, eye_th * 0.09)
+        sclera_r = eye_th * 0.34
+        pupil_r  = sclera_r * 0.44
+        blink    = self._eye_blink
+        in_flip  = self._sf_flip or (0.25 <= blink < 0.75)
+        closed   = blink >= 0.75
 
         for sign in (-1, 1):
-            ox = ecx + sign * spacing / 2
-            oy = ecy
-            if self._sf_flip:
-                # Sclera
-                cr.new_path()
-                cr.save()
-                cr.translate(ox, oy); cr.scale(sx, open_frac)
-                cr.arc(0, 0, eye_r, 0, 2 * math.pi)
-                cr.restore()
-                cr.set_source_rgba(0.96, 0.96, 0.94, 0.93); cr.fill_preserve()
-                cr.set_source_rgba(0.22, 0.22, 0.22, 0.72)
-                cr.set_line_width(max(0.8, eye_r * 0.06)); cr.stroke()
-                # Card-edge mid-flip bar
-                bar_h = max(1.5, eye_r * 0.22 * open_frac)
-                cr.set_source_rgba(0.05, 0.05, 0.08, 0.85)
-                cr.rectangle(ox - eye_r * sx, oy - bar_h / 2, eye_r * sx * 2, bar_h)
+            tx = ecx + sign * (eye_tw / 2 + t_gap / 2) - eye_tw / 2
+            ty = ecy - eye_th / 2
+            ox = tx + eye_tw / 2
+            oy = ty + eye_th / 2
+
+            # Tile background
+            cr.set_source_rgba(*tile_bg)
+            self._rounded_rect(cr, tx, ty, eye_tw, eye_th, tile_r); cr.fill()
+
+            if in_flip:
+                # Card-edge mid-flip bar (gaze change or blink transition)
+                bar_h = max(1.5, eye_th * 0.16)
+                cr.set_source_rgba(*split_c)
+                cr.rectangle(tx + tile_r, oy - bar_h / 2, eye_tw - tile_r * 2, bar_h)
+                cr.fill()
+            elif closed:
+                # Closed eye: white horizontal dash
+                dash_w = eye_tw * 0.52
+                dash_h = max(1.5, eye_th * 0.10)
+                cr.set_source_rgba(*tile_fg)
+                cr.rectangle(ox - dash_w / 2, oy - dash_h / 2, dash_w, dash_h)
                 cr.fill()
             else:
-                self._draw_eye_x11(cr, ox, oy, eye_r, open_frac, angle, tfrac)
+                # Open eye: white sclera circle + dark pupil at snapped direction
+                angle = self._sf_step * (math.pi / 4)
+                cr.new_path()
+                cr.arc(ox, oy, sclera_r, 0, 2 * math.pi)
+                cr.set_source_rgba(*tile_fg); cr.fill()
+                px = ox + (sclera_r - pupil_r) * 0.80 * self._sf_travel * math.cos(angle)
+                py = oy + (sclera_r - pupil_r) * 0.80 * self._sf_travel * math.sin(angle)
+                cr.new_path()
+                cr.arc(px, py, pupil_r, 0, 2 * math.pi)
+                cr.set_source_rgba(0.05, 0.05, 0.08, 0.97); cr.fill()
+
+            # Split line — the defining Solari detail
+            cr.set_source_rgba(*split_c)
+            cr.set_line_width(max(0.8, eye_th * 0.020))
+            cr.move_to(tx + tile_r, oy)
+            cr.line_to(tx + eye_tw - tile_r, oy); cr.stroke()
+
+            # Tile edge highlight
+            cr.set_source_rgba(tile_bg[0] + 0.12, tile_bg[1] + 0.12, tile_bg[2] + 0.12, 0.55)
+            cr.set_line_width(max(0.5, eye_th * 0.012))
+            self._rounded_rect(cr, tx + 0.5, ty + 0.5, eye_tw - 1, eye_th - 1, tile_r)
+            cr.stroke()
 
     def _draw_analog(self, cr, w, h, now, digital_inset=False):
         cx, cy = w / 2.0, h / 2.0
@@ -3397,8 +3442,8 @@ class ClockWindow(Gtk.Window):
                                   tile_bg, tile_fg, split_c, tile_r, dots)
             time_x += tw + t_gap
 
-        eye_r  = th * 0.22 if self.show_eyes else 0.0
-        eyes_h = (eye_r * 2.0 + t_gap * 2) if self.show_eyes else 0.0
+        eye_th = th * 0.55 if self.show_eyes else 0.0
+        eyes_h = (eye_th + t_gap * 2) if self.show_eyes else 0.0
 
         if show_d:
             date_str = now.strftime('%a %d %b')
@@ -3413,8 +3458,9 @@ class ClockWindow(Gtk.Window):
                 date_x += tw2 + t_gap2
 
         if self.show_eyes:
-            eyes_ctr_y = time_y + th + t_gap + eye_r
-            self._draw_solari_eyes(cr, w / 2, eyes_ctr_y, eye_r)
+            eyes_ctr_y = time_y + th + t_gap + eye_th / 2
+            self._draw_solari_eyes(cr, w / 2, eyes_ctr_y, eye_th,
+                                   tile_bg, tile_fg, split_c, t_gap)
 
         # Icons at top — ghost matches dimmed tile fg
         n  = self._active_alarm_count()
