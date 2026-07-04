@@ -2014,7 +2014,10 @@ class ClockWindow(Gtk.Window):
         self._append_tracker_menu_items(menu, show_reset=shift)
 
         menu.show_all()
-        menu.popup_at_pointer(event)
+        # Defer by one idle cycle so the current button-press event fully settles
+        # before the grab. Avoids a race where an underlying POPUP window (browser
+        # tooltip/video player) wins the grab first, leaving no menu and no recovery.
+        GLib.idle_add(lambda: menu.popup_at_pointer(None) or False)
 
     def _toggle_seconds(self, item):
         self.show_seconds = item.get_active()
