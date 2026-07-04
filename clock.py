@@ -118,12 +118,11 @@ def save_state(data):
 # ─── Fade-to-clear constants (v1.2.0, HLT desktop-clock #330) ─────────
 # Durations in milliseconds. Animation tick is 50 ms (20 fps) — same
 # rate as the eye animation. Default wait between fade-out and fade-in
-# is 5 minutes (user-configurable from the tray Fade timeout submenu).
-FADE_OUT_MS         = 10_000   # fade-out phase: 10 seconds
-FADE_IN_MS          = 120_000  # fade-in phase: 2 minutes
+# is 5 minutes (user-configurable — tray "Fade duration" opens a dialog).
+FADE_OUT_MS         = 5_000    # fade-out phase: 5 seconds
+FADE_IN_MS          = 60_000   # fade-in phase: 1 minute
 FADE_FAST_IN_MS     = 2_500    # alarm/timer overrides → ~2.5 s back
 FADE_TICK_MS        = 50       # 20 fps
-FADE_WAIT_OPTIONS_MIN = (1, 5, 10, 30, 60)
 FADE_WAIT_DEFAULT_MIN = 5
 
 def monitor_state_file(geom):
@@ -3675,17 +3674,10 @@ class ClockManager:
             menu.append(restore_item)
             menu.append(Gtk.SeparatorMenuItem())
 
-        # Fade timeout — how long the clock stays invisible before
-        # fading back. Always visible regardless of cycle state so
-        # the user can change it when they remember.
-        fade_item = Gtk.MenuItem(label=f'Fade timeout: {self.fade_wait_minutes} min')
-        fade_sub  = Gtk.Menu()
-        for opt in FADE_WAIT_OPTIONS_MIN:
-            mi = Gtk.CheckMenuItem(label=f'{opt} min')
-            mi.set_active(opt == self.fade_wait_minutes)
-            mi.connect('activate', lambda _, v=opt: self.set_fade_wait_minutes(v))
-            fade_sub.append(mi)
-        fade_item.set_submenu(fade_sub)
+        # Fade duration — how long the clock stays invisible before
+        # fading back. Opens a dialog so any duration can be typed.
+        fade_item = Gtk.MenuItem(label=f'Fade duration: {self.fade_wait_minutes} min…')
+        fade_item.connect('activate', lambda _: self._show_fade_duration_dialog())
         menu.append(fade_item)
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -3936,6 +3928,34 @@ class ClockManager:
         shared = load_state()
         shared['fade_wait_minutes'] = minutes
         save_state(shared)
+
+    def _show_fade_duration_dialog(self):
+        dlg = Gtk.Dialog(title='Fade duration')
+        dlg.set_keep_above(True)
+        dlg.add_buttons('Cancel', Gtk.ResponseType.CANCEL, 'OK', Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_margin_top(12); box.set_margin_bottom(12)
+        box.set_margin_start(16); box.set_margin_end(16)
+        label_pre = Gtk.Label(label='Stay invisible for')
+        entry = Gtk.Entry()
+        entry.set_text(str(self.fade_wait_minutes))
+        entry.set_width_chars(5)
+        entry.set_activates_default(True)
+        label_post = Gtk.Label(label='minutes')
+        box.pack_start(label_pre, False, False, 0)
+        box.pack_start(entry, False, False, 0)
+        box.pack_start(label_post, False, False, 0)
+        dlg.get_content_area().add(box)
+        dlg.show_all()
+        resp = dlg.run()
+        text = entry.get_text()
+        dlg.destroy()
+        if resp == Gtk.ResponseType.OK:
+            try:
+                self.set_fade_wait_minutes(max(1, int(text)))
+            except ValueError:
+                pass
 
     def _on_alert_hide(self, dlg):
         if dlg in self._alert_windows:
