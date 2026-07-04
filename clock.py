@@ -2015,6 +2015,11 @@ class ClockWindow(Gtk.Window):
         self._append_tracker_menu_items(menu, show_reset=shift)
 
         menu.show_all()
+        # If the pointer grab fails (e.g. browser video player has an active grab),
+        # GTK still shows the menu window but without a grab. Without explicit cleanup,
+        # GTK thinks a menu is active and blocks ALL future menu popups. Handling
+        # grab-broken-event and calling popdown() restores GTK's menu state.
+        menu.connect('grab-broken-event', lambda m, _ev: m.popdown() or False)
         menu.popup_at_pointer(event)
 
     def _toggle_seconds(self, item):
@@ -3945,6 +3950,7 @@ class ClockManager:
         close_item.connect('activate', lambda _: None)
         menu.append(close_item)
         menu.show_all()
+        menu.connect('grab-broken-event', lambda m, _ev: m.popdown() or False)
         menu.popup(None, None, None, None, button, time)
 
     def _show_about(self, _):
@@ -4124,6 +4130,7 @@ class ClockManager:
         menu.append(close_item)
 
         menu.show_all()
+        menu.connect('grab-broken-event', lambda m, _ev: m.popdown() or False)
         menu.popup(None, None, None, None, button, time)
 
     def _set_win_mode(self, item, win, mode):
