@@ -5,7 +5,7 @@ BUILD    := packaging/$(PKG)_$(VERSION)
 DEB      := packaging/$(PKG)_$(VERSION).deb
 DIST     := $(BUILD)/usr/lib/python3/dist-packages/$(PKG_)-$(VERSION).dist-info
 
-.PHONY: deb clean
+.PHONY: deb clean test
 
 deb:
 	@echo "Building $(PKG) version $(VERSION)..."
@@ -64,6 +64,9 @@ deb:
 	# Build .deb
 	dpkg-deb --root-owner-group --build $(BUILD) $(DEB)
 	@echo "Done: $(DEB)"
+
+test:
+	python3 -m pytest tests/ -v
 
 clean:
 	rm -rf packaging/$(PKG)_*/

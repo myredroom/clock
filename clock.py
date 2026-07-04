@@ -4396,13 +4396,14 @@ class ClockManager:
 
 # ─── Entry point ──────────────────────────────────────────────────────
 
-manager = ClockManager()
+if __name__ == '__main__':
+    manager = ClockManager()
 
-def _on_sigterm(signum, frame):
-    for w in manager.windows: w._save_all()
-    Gtk.main_quit()
+    def _on_sigterm(signum, frame):
+        for w in manager.windows: w._save_all()
+        Gtk.main_quit()
 
-signal.signal(signal.SIGTERM, _on_sigterm)
-signal.signal(signal.SIGINT,  _on_sigterm)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    signal.signal(signal.SIGINT,  _on_sigterm)
 
-Gtk.main()
+    Gtk.main()
