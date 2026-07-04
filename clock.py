@@ -1851,6 +1851,7 @@ class ClockWindow(Gtk.Window):
             nx = max(l, min(int(event.x_root - ox), r - cw))
             ny = max(t, min(int(event.y_root - oy), b - ch))
             self.move(nx, ny)
+            self._hover_overlay.hide()
         else:
             self.queue_draw()
 
@@ -3191,17 +3192,25 @@ class ClockWindow(Gtk.Window):
         start_y = (h - total_h) / 2 + pad_y
         start_x = (w - total_w) / 2
         x = start_x
+        first_colon = True
         for ch in time_str:
             if ch == ':':
-                self._draw_7seg_char(cr, x, start_y, cw, dh, ch, seg_on, seg_off, colon_dots)
+                dots = colon_dots if first_colon else None
+                self._draw_7seg_char(cr, x, start_y, cw, dh, ch, seg_on, seg_off, dots)
+                first_colon = False
                 x += cw + igap
             else:
                 self._draw_7seg_char(cr, x, start_y, dw, dh, ch, seg_on, seg_off)
                 x += dw + igap
 
         if self.show_eyes:
-            eyes_y = start_y + dh + igap
-            self._draw_eyes(cr, w / 2, eyes_y + eye_r, eye_r)
+            if show_d:
+                # Between digits and date row — igap on each side, already symmetric
+                eyes_ctr_y = start_y + dh + igap + eye_r
+            else:
+                # Centre in the full remaining space (eyes_h + bottom pad_y)
+                eyes_ctr_y = start_y + dh + (eyes_h + pad_y) / 2
+            self._draw_eyes(cr, w / 2, eyes_ctr_y, eye_r)
 
         if show_d:
             date_str  = now.strftime('%a %d %b')
@@ -3307,10 +3316,15 @@ class ClockWindow(Gtk.Window):
         else:
             colon_dots = None
 
+        first_colon = True
         for ch in time_str:
+            if ch == ':':
+                dots = colon_dots if first_colon else None
+                first_colon = False
+            else:
+                dots = None
             self._draw_split_tile(cr, time_x, time_y, tw, th, ch,
-                                  tile_bg, tile_fg, split_c, tile_r,
-                                  colon_dots if ch == ':' else None)
+                                  tile_bg, tile_fg, split_c, tile_r, dots)
             time_x += tw + t_gap
 
         if show_d:
