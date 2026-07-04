@@ -1847,12 +1847,12 @@ class ClockWindow(Gtk.Window):
         if event.button == 1 and self.window_mode == 'normal':
             wx, wy = self.get_position()
             self._drag_offset = (event.x_root - wx, event.y_root - wy)
-        elif event.button == 3:
-            self._show_menu(event)
 
     def _on_button_release(self, widget, event):
         if event.button == 1:
             self._drag_offset = None
+        elif event.button == 3:
+            self._show_menu(event)
 
     def _on_motion(self, widget, event):
         if self._drag_offset:
@@ -2017,8 +2017,7 @@ class ClockWindow(Gtk.Window):
         self._append_tracker_menu_items(menu, show_reset=shift)
 
         menu.show_all()
-        x, y = int(event.x_root), int(event.y_root)
-        menu.popup(None, None, lambda m, d: (x, y, True), None, 0, event.time)
+        menu.popup_at_pointer(event)
 
     def _toggle_seconds(self, item):
         self.show_seconds = item.get_active()
