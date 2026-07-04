@@ -17,6 +17,7 @@ import wave
 import array
 import tempfile
 import subprocess
+import threading
 import shutil
 import base64
 import ctypes
@@ -375,14 +376,18 @@ def schedule_rtc_wake(alarms, timers=None):
             _warn_rtc_wake(f'helper {RTC_WAKE_HELPER} not present (running from source?)',
                            loud=False)
         return
-    try:
-        r = subprocess.run(['sudo', '-n', RTC_WAKE_HELPER, arg],
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode != 0:
-            _warn_rtc_wake((r.stderr or '').strip() or f'helper exit {r.returncode}',
-                           loud=True)
-    except Exception as e:
-        _warn_rtc_wake(str(e), loud=True)
+    # Run in a daemon thread — subprocess.run blocks up to 10s on stalled sudo,
+    # which hangs the GTK main loop and freezes the clock (HLT #669).
+    def _arm():
+        try:
+            r = subprocess.run(['sudo', '-n', RTC_WAKE_HELPER, arg],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                _warn_rtc_wake((r.stderr or '').strip() or f'helper exit {r.returncode}',
+                               loud=True)
+        except Exception as e:
+            _warn_rtc_wake(str(e), loud=True)
+    threading.Thread(target=_arm, daemon=True).start()
 
 # ─── Alert dialog ─────────────────────────────────────────────────────
 
@@ -3965,6 +3970,7 @@ class ClockManager:
                        if t['state'] != 'completed' or
                        (t['completed_at'] and now_ts - t['completed_at'] < 5)]
         changed = False
+        timer_completed = False
         for t in self.timers:
             if t['state'] != 'running': continue
             t['remaining'] -= 1
@@ -3973,10 +3979,14 @@ class ClockManager:
                 t['remaining'] = 0
                 t['state'] = 'completed'
                 t['completed_at'] = now_ts
+                timer_completed = True
                 GLib.idle_add(self._fire_timer, t.copy())
         if changed:
             save_timers(self.timers)
-            schedule_rtc_wake(load_alarms(), self.timers)
+            if timer_completed:
+                # Re-arm only on completion — not every second while running
+                # (per-second subprocess.run was the freeze source, HLT #669).
+                schedule_rtc_wake(load_alarms(), self.timers)
 
     def _fire_timer(self, timer):
         # v1.2.0 #330: as for alarms — bring any faded clock back fast.

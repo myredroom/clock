@@ -1,6 +1,6 @@
 [project]
 name = "desktop-clock"
-version = "1.3.0"
+version = "1.3.1"
 description = "Analog/digital desktop clock with alarms, timers, and snap-to-corner"
 authors = [{name = "Brendan", email = "myredroom@gmail.com"}]
 license = {text = "MIT"}
