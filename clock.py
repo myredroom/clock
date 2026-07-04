@@ -1507,11 +1507,16 @@ class FadeSliderOverlay(Gtk.Window):
 
         cx, cy = clock_win.get_position()
         cw, ch = clock_win.get_size()
-        GLib.idle_add(self._centre, cx, cy, cw, ch)
+        mg = clock_win.monitor_geom
+        GLib.idle_add(self._centre, cx, cy, cw, ch, mg.x, mg.y, mg.width, mg.height)
 
-    def _centre(self, cx, cy, cw, ch):
+    def _centre(self, cx, cy, cw, ch, mx, my, mw, mh):
         ow, oh = self.get_size()
-        self.move(cx + (cw - ow) // 2, cy + (ch - oh) // 2)
+        nx = cx + (cw - ow) // 2
+        ny = cy + (ch - oh) // 2
+        nx = max(mx, min(nx, mx + mw - ow))
+        ny = max(my, min(ny, my + mh - oh))
+        self.move(nx, ny)
         return False
 
     @staticmethod
