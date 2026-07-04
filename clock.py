@@ -1670,12 +1670,13 @@ class ClockWindow(Gtk.Window):
         self._eye_timer_id    = None
 
         # Solari split-eye state (Split digital style only, HLT #817)
-        self._sf_step        = 0      # current pupil direction 0-7 (× π/4)
-        self._sf_travel      = 0.0    # binary: 0.0 centred or 0.65 peripheral
-        self._sf_flip        = False  # mid-flip visual this frame
-        self._sf_hold        = 0      # hold frames remaining
-        self._sf_last_mouse  = (0, 0) # last seen mouse position
-        self._sf_still_frames = 0     # consecutive frames mouse has been still
+        # 72-card drum: one card per 5°. Mechanism clicks through every intermediate
+        # card to reach the target — short hold per card, long hold at destination.
+        self._sf_step         = 0      # current card 0-71 (× 5° = × π/36)
+        self._sf_flip         = False  # mid-flip visual this frame
+        self._sf_hold         = 0      # hold frames remaining
+        self._sf_last_mouse   = (0, 0) # last seen mouse position
+        self._sf_still_frames = 0      # consecutive frames mouse has been still
 
         # Fade state machine (v1.2.0, HLT desktop-clock #330)
         # idle → fading_out (10s) → faded (T min) → fading_in (2 min) → idle
@@ -2464,9 +2465,10 @@ class ClockWindow(Gtk.Window):
             self._eye_move_frames = random.randint(40, 120)  # 2-6 s between drifts
 
     def _update_solari_state(self):
-        """Advance Solari split-flap pupil one 45° step per cycle toward target.
-        When mouse is on this monitor, target only locks in after the mouse has
-        been still for 6 frames (~300ms) — moving cursor doesn't trigger flapping."""
+        """72-card Solari drum: clicks through every 5° card toward target.
+        Mouse must be still for ~300ms before target locks in. Intermediate
+        cards hold 1 frame (50ms); destination holds 6 frames (300ms)."""
+        _N = 72  # cards in the drum
         _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
         g = self.monitor_geom
         mouse_here = g.x <= mx < g.x + g.width and g.y <= my < g.y + g.height
@@ -2478,7 +2480,6 @@ class ClockWindow(Gtk.Window):
                 self._sf_last_mouse   = (mx, my)
                 self._sf_still_frames = 0
             if self._sf_still_frames < 6:
-                # Mouse still moving — cancel any pending step, count down hold
                 self._sf_flip = False
                 if self._sf_hold > 0:
                     self._sf_hold -= 1
@@ -2486,27 +2487,25 @@ class ClockWindow(Gtk.Window):
             wx, wy = self.get_position()
             cw, ch = self._clock_size()
             raw_angle = math.atan2(my - (wy + ch / 2), mx - (wx + cw / 2))
-            raw_frac  = min(1.0, math.hypot(mx - (wx + cw / 2), my - (wy + ch / 2)) / (cw * 0.4))
         else:
             self._sf_still_frames = 0
             raw_angle = self._eye_angle
-            raw_frac  = self._eye_travel
 
-        tgt_step   = round((raw_angle % (2 * math.pi)) / (math.pi / 4)) % 8
-        tgt_travel = 0.65 if raw_frac > 0.3 else 0.0
+        tgt_step = round((raw_angle % (2 * math.pi)) / (2 * math.pi / _N)) % _N
 
         if self._sf_flip:
-            # Commit: advance one 45° step toward target
-            diff = (tgt_step - self._sf_step + 4) % 8 - 4  # shortest path, -4..4
+            # Commit: advance one card toward target
+            diff = (tgt_step - self._sf_step + _N // 2) % _N - _N // 2
             if diff != 0:
-                self._sf_step = (self._sf_step + (1 if diff > 0 else -1)) % 8
-            self._sf_travel = tgt_travel
-            self._sf_flip   = False
-            self._sf_hold   = 4
+                self._sf_step = (self._sf_step + (1 if diff > 0 else -1)) % _N
+            self._sf_flip = False
+            # Short hold on intermediate cards; long hold at destination
+            at_target = (self._sf_step == tgt_step)
+            self._sf_hold = 6 if at_target else 1
         elif self._sf_hold > 0:
             self._sf_hold -= 1
         else:
-            if self._sf_step != tgt_step or self._sf_travel != tgt_travel:
+            if self._sf_step != tgt_step:
                 self._sf_flip = True
 
     def _draw_eyes(self, cr, ecx, ecy, eye_r):
@@ -2755,12 +2754,12 @@ class ClockWindow(Gtk.Window):
         cr.set_line_width(max(1.0, eye_r * 0.10)); cr.stroke()
 
     def _draw_solari_eyes(self, cr, ecx, ecy, eye_th, tile_bg, tile_fg, split_c, t_gap):
-        """Two Solari split-flap tiles styled as eyes — white circle on dark tile,
-        pupil snaps to 8 discrete directions. Blink = flip to closed (horizontal dash)."""
+        """Two Solari split-flap tiles styled as eyes — 72-card drum, one per 5°.
+        Pupil always at full offset so every card is visually distinct."""
         eye_tw   = eye_th
         tile_r   = max(2.0, eye_th * 0.09)
-        sclera_r = eye_th * 0.34
-        pupil_r  = sclera_r * 0.44
+        sclera_r = eye_th * 0.38
+        pupil_r  = sclera_r * 0.36
         blink    = self._eye_blink
         in_flip  = self._sf_flip or (0.25 <= blink < 0.75)
         closed   = blink >= 0.75
@@ -2789,15 +2788,16 @@ class ClockWindow(Gtk.Window):
                 cr.rectangle(ox - dash_w / 2, oy - dash_h / 2, dash_w, dash_h)
                 cr.fill()
             else:
-                # Open eye: white sclera circle + dark pupil at snapped direction
-                angle = self._sf_step * (math.pi / 4)
+                # Open eye: white sclera + dark pupil at full offset for this card
+                angle  = self._sf_step * (2 * math.pi / 72)
+                offset = (sclera_r - pupil_r) * 0.88
                 cr.new_path()
                 cr.arc(ox, oy, sclera_r, 0, 2 * math.pi)
                 cr.set_source_rgba(*tile_fg); cr.fill()
-                px = ox + (sclera_r - pupil_r) * 0.80 * self._sf_travel * math.cos(angle)
-                py = oy + (sclera_r - pupil_r) * 0.80 * self._sf_travel * math.sin(angle)
                 cr.new_path()
-                cr.arc(px, py, pupil_r, 0, 2 * math.pi)
+                cr.arc(ox + offset * math.cos(angle),
+                       oy + offset * math.sin(angle),
+                       pupil_r, 0, 2 * math.pi)
                 cr.set_source_rgba(0.05, 0.05, 0.08, 0.97); cr.fill()
 
             # Split line — the defining Solari detail
