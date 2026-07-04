@@ -1411,6 +1411,137 @@ class TimerHoverOverlay(Gtk.Window):
             self.move(clock_x, clock_y - h - 4)
         return False
 
+class FadeSliderOverlay(Gtk.Window):
+    """Duration picker that floats over a clock on double-click.
+    Sliding adjusts per-cycle fade duration; "Fade now" confirms and starts the cycle."""
+    _css_loaded = False
+
+    def __init__(self, clock_win, initial_minutes, on_fade):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        self._on_fade = on_fade
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+
+        if not FadeSliderOverlay._css_loaded:
+            css = b'''
+            .fade-sl-bg {
+                background-color: rgba(14,14,24,0.95);
+                border-radius: 9px;
+                border: 1px solid rgba(255,255,255,0.20);
+            }
+            .fade-sl-label { color: #c8daf0; }
+            '''
+            p = Gtk.CssProvider()
+            p.load_from_data(css)
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            FadeSliderOverlay._css_loaded = True
+
+        def _draw_bg(w, cr):
+            cr.set_operator(cairo.OPERATOR_SOURCE)
+            cr.set_source_rgba(0, 0, 0, 0)
+            cr.paint()
+            cr.set_operator(cairo.OPERATOR_OVER)
+            return False
+        self.connect('draw', _draw_bg)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.get_style_context().add_class('fade-sl-bg')
+
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        inner.set_margin_top(14); inner.set_margin_bottom(14)
+        inner.set_margin_start(18); inner.set_margin_end(18)
+
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lbl = Gtk.Label(label='Fade for:')
+        lbl.get_style_context().add_class('fade-sl-label')
+        hdr.pack_start(lbl, False, False, 0)
+        self._val_lbl = Gtk.Label()
+        self._val_lbl.set_markup(f'<b><span foreground="#ffffff">{self._fmt(initial_minutes)}</span></b>')
+        hdr.pack_start(self._val_lbl, False, False, 0)
+        inner.pack_start(hdr, False, False, 0)
+
+        adj = Gtk.Adjustment(value=float(initial_minutes), lower=1.0, upper=240.0,
+                             step_increment=1.0, page_increment=15.0)
+        self._scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
+        self._scale.set_size_request(280, -1)
+        self._scale.set_draw_value(False)
+        self._scale.set_round_digits(0)
+        for m, labelled in [(5, True), (15, False), (30, True), (60, True),
+                            (90, False), (120, True), (180, False), (240, True)]:
+            self._scale.add_mark(float(m), Gtk.PositionType.BOTTOM,
+                                 self._fmt(m) if labelled else None)
+        self._scale.connect('value-changed', self._on_value_changed)
+        inner.pack_start(self._scale, False, False, 0)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_row.set_halign(Gtk.Align.END)
+        btn_row.set_margin_top(2)
+
+        cancel = Gtk.Button(label='Cancel')
+        cancel.get_style_context().add_class('fade-sl-label')
+        cancel.connect('clicked', lambda _: self.destroy())
+        btn_row.pack_start(cancel, False, False, 0)
+
+        fade_btn = Gtk.Button(label='Fade now')
+        _css_fb = Gtk.CssProvider()
+        _css_fb.load_from_data(b'button { background: #1a6496; color: white; }')
+        fade_btn.get_style_context().add_provider(_css_fb, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        fade_btn.connect('clicked', self._do_fade)
+        btn_row.pack_start(fade_btn, False, False, 0)
+
+        inner.pack_start(btn_row, False, False, 0)
+        outer.pack_start(inner, False, False, 0)
+        self.add(outer)
+
+        self.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+        self.connect('key-press-event', self._on_key)
+        self.show_all()
+
+        cx, cy = clock_win.get_position()
+        cw, ch = clock_win.get_size()
+        GLib.idle_add(self._centre, cx, cy, cw, ch)
+
+    def _centre(self, cx, cy, cw, ch):
+        ow, oh = self.get_size()
+        self.move(cx + (cw - ow) // 2, cy + (ch - oh) // 2)
+        return False
+
+    @staticmethod
+    def _fmt(m):
+        m = int(m)
+        if m < 60:
+            return f'{m} min'
+        h, r = divmod(m, 60)
+        return f'{h} h' if r == 0 else f'{h} h {r} m'
+
+    def _on_value_changed(self, scale):
+        m = int(scale.get_value())
+        self._val_lbl.set_markup(f'<b><span foreground="#ffffff">{self._fmt(m)}</span></b>')
+
+    def _on_key(self, widget, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self.destroy()
+            return True
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self._do_fade(None)
+            return True
+        return False
+
+    def _do_fade(self, _):
+        m = int(self._scale.get_value())
+        self.destroy()
+        if self._on_fade:
+            self._on_fade(m)
+
+
 # ─── Clock themes / sizes ─────────────────────────────────────────────
 
 THEMES = {
@@ -1662,6 +1793,12 @@ class ClockWindow(Gtk.Window):
         self._hover_overlay.update(self.manager.timers, x, y, w, h, screen_h,
                                    alarms=enabled_alarms)
 
+    def _show_fade_slider(self):
+        def _on_confirm(minutes):
+            self.manager.set_fade_wait_minutes(minutes)
+            self.fade_start()
+        FadeSliderOverlay(self, self.manager.fade_wait_minutes, _on_confirm)
+
     def _on_key_press(self, widget, event):
         pass
 
@@ -1685,7 +1822,7 @@ class ClockWindow(Gtk.Window):
             if self._fade_state == 'fading_out':
                 self.fade_cancel()
             elif self._fade_state == 'idle':
-                self.fade_start()
+                self._show_fade_slider()
             return
         if event.button == 1 and self.window_mode == 'normal':
             wx, wy = self.get_position()
