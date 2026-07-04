@@ -3504,20 +3504,28 @@ class ClockWindow(Gtk.Window):
         # Tile background
         cr.set_source_rgba(*tile_bg)
         self._rounded_rect(cr, x, y, tw, th, tile_r); cr.fill()
-        # Character — colon draws coloured dots when dot_colors provided
+        # Character
+        font_size = max(5, int(th * 0.68))
+        layout = PangoCairo.create_layout(cr)
+        layout.set_text(char, -1)
+        layout.set_font_description(Pango.FontDescription(f'Ubuntu Bold {font_size}'))
+        lw, lh = layout.get_pixel_size()
+        gx = x + tw / 2 - lw / 2
+        gy = y + th / 2 - lh / 2
         if char == ':' and dot_colors is not None:
-            dot_r = max(2.0, tw * 0.13)
-            cr.new_path(); cr.set_source_rgba(*dot_colors[0])
-            cr.arc(x + tw / 2, y + th * 0.30, dot_r, 0, 2 * math.pi); cr.fill()
-            cr.new_path(); cr.set_source_rgba(*dot_colors[1])
-            cr.arc(x + tw / 2, y + th * 0.70, dot_r, 0, 2 * math.pi); cr.fill()
+            # Monitor ID colon: clip-repaint the glyph's own dots in their colours
+            # so dot positions are identical to the plain colon — both colons are
+            # the same static display, just coloured differently. Matches Font style.
+            mid = y + th / 2
+            for color, clip_top, clip_h in [(dot_colors[0], y, mid - y),
+                                             (dot_colors[1], mid, y + th - mid)]:
+                cr.save()
+                cr.rectangle(x, clip_top, tw, clip_h); cr.clip()
+                cr.move_to(gx, gy)
+                cr.set_source_rgba(*color); PangoCairo.show_layout(cr, layout)
+                cr.restore()
         else:
-            font_size = max(5, int(th * 0.68))
-            layout = PangoCairo.create_layout(cr)
-            layout.set_text(char, -1)
-            layout.set_font_description(Pango.FontDescription(f'Ubuntu Bold {font_size}'))
-            lw, lh = layout.get_pixel_size()
-            cr.move_to(x + tw / 2 - lw / 2, y + th / 2 - lh / 2)
+            cr.move_to(gx, gy)
             cr.set_source_rgba(*tile_fg); PangoCairo.show_layout(cr, layout)
         # Split line — the defining detail
         cr.set_source_rgba(*split_c)
