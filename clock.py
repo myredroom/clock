@@ -1669,6 +1669,12 @@ class ClockWindow(Gtk.Window):
         self._eye_move_frames = random.randint(40, 100)
         self._eye_timer_id    = None
 
+        # Solari split-eye state (Split digital style only, HLT #817)
+        self._sf_step   = 0      # current pupil direction 0-7 (× π/4)
+        self._sf_travel = 0.0    # binary: 0.0 centred or 0.65 peripheral
+        self._sf_flip   = False  # mid-flip visual this frame
+        self._sf_hold   = 0      # hold frames remaining
+
         # Fade state machine (v1.2.0, HLT desktop-clock #330)
         # idle → fading_out (10s) → faded (T min) → fading_in (2 min) → idle
         # Double-click on clock body (not bell/hourglass) triggers from idle.
@@ -2185,6 +2191,8 @@ class ClockWindow(Gtk.Window):
         icon_strip = max(28,  th * 0.40)
         box_w = total_w + pad_x * 2
         box_h = th + pad_y * 2 + icon_strip
+        if self.show_eyes:
+            box_h += th * 0.22 * 2.0 + t_gap * 2
         if self.show_date:
             th2    = max(6, th * 0.50)
             tw2    = th2 * 0.70
@@ -2405,6 +2413,8 @@ class ClockWindow(Gtk.Window):
             self._eye_timer_id = None
             return False
         self._update_eye_idle()
+        if self.digital_style == 'Split':
+            self._update_solari_state()
         if self.get_visible() and self.window_mode != 'hidden':
             self.queue_draw()
         return True
@@ -2450,6 +2460,38 @@ class ClockWindow(Gtk.Window):
             self._eye_tgt_angle   = random.uniform(-math.pi, math.pi)
             self._eye_tgt_travel  = random.uniform(0.15, 0.65)
             self._eye_move_frames = random.randint(40, 120)  # 2-6 s between drifts
+
+    def _update_solari_state(self):
+        """Advance Solari split-flap pupil one 45° step per cycle toward target."""
+        _, mx, my = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        g = self.monitor_geom
+        mouse_here = g.x <= mx < g.x + g.width and g.y <= my < g.y + g.height
+
+        if mouse_here:
+            wx, wy = self.get_position()
+            cw, ch = self._clock_size()
+            raw_angle = math.atan2(my - (wy + ch / 2), mx - (wx + cw / 2))
+            raw_frac  = min(1.0, math.hypot(mx - (wx + cw / 2), my - (wy + ch / 2)) / (cw * 0.4))
+        else:
+            raw_angle = self._eye_angle
+            raw_frac  = self._eye_travel
+
+        tgt_step   = round((raw_angle % (2 * math.pi)) / (math.pi / 4)) % 8
+        tgt_travel = 0.65 if raw_frac > 0.3 else 0.0
+
+        if self._sf_flip:
+            # Commit: advance one 45° step toward target
+            diff = (tgt_step - self._sf_step + 4) % 8 - 4  # shortest path, -4..4
+            if diff != 0:
+                self._sf_step = (self._sf_step + (1 if diff > 0 else -1)) % 8
+            self._sf_travel = tgt_travel
+            self._sf_flip   = False
+            self._sf_hold   = 4
+        elif self._sf_hold > 0:
+            self._sf_hold -= 1
+        else:
+            if self._sf_step != tgt_step or self._sf_travel != tgt_travel:
+                self._sf_flip = True
 
     def _draw_eyes(self, cr, ecx, ecy, eye_r):
         spacing = eye_r * 2.2
@@ -2696,6 +2738,34 @@ class ClockWindow(Gtk.Window):
         cr.set_source_rgba(0.06, 0.06, 0.12, 0.95)
         cr.set_line_width(max(1.0, eye_r * 0.10)); cr.stroke()
 
+    def _draw_solari_eyes(self, cr, ecx, ecy, eye_r):
+        """x11 eyes with Solari split-flap pupil stepping for Split digital style."""
+        spacing   = eye_r * 2.2
+        open_frac = max(0.04, 1.0 - self._eye_blink)
+        angle     = self._sf_step * (math.pi / 4)
+        tfrac     = self._sf_travel
+        sx        = 0.76
+
+        for sign in (-1, 1):
+            ox = ecx + sign * spacing / 2
+            oy = ecy
+            if self._sf_flip:
+                # Sclera
+                cr.new_path()
+                cr.save()
+                cr.translate(ox, oy); cr.scale(sx, open_frac)
+                cr.arc(0, 0, eye_r, 0, 2 * math.pi)
+                cr.restore()
+                cr.set_source_rgba(0.96, 0.96, 0.94, 0.93); cr.fill_preserve()
+                cr.set_source_rgba(0.22, 0.22, 0.22, 0.72)
+                cr.set_line_width(max(0.8, eye_r * 0.06)); cr.stroke()
+                # Card-edge mid-flip bar
+                bar_h = max(1.5, eye_r * 0.22 * open_frac)
+                cr.set_source_rgba(0.05, 0.05, 0.08, 0.85)
+                cr.rectangle(ox - eye_r * sx, oy - bar_h / 2, eye_r * sx * 2, bar_h)
+                cr.fill()
+            else:
+                self._draw_eye_x11(cr, ox, oy, eye_r, open_frac, angle, tfrac)
 
     def _draw_analog(self, cr, w, h, now, digital_inset=False):
         cx, cy = w / 2.0, h / 2.0
@@ -3327,17 +3397,24 @@ class ClockWindow(Gtk.Window):
                                   tile_bg, tile_fg, split_c, tile_r, dots)
             time_x += tw + t_gap
 
+        eye_r  = th * 0.22 if self.show_eyes else 0.0
+        eyes_h = (eye_r * 2.0 + t_gap * 2) if self.show_eyes else 0.0
+
         if show_d:
             date_str = now.strftime('%a %d %b')
             n_date   = len(date_str)
             date_w   = n_date * tw2 + (n_date - 1) * t_gap2
             date_x   = (w - date_w) / 2
-            date_y   = time_y + th + t_gap * 2
+            date_y   = time_y + th + t_gap * 2 + eyes_h
             tile_r2  = max(1.5, th2 * 0.07)
             for ch in date_str:
                 self._draw_split_tile(cr, date_x, date_y, tw2, th2, ch,
                                       tile_bg, tile_fg, split_c, tile_r2)
                 date_x += tw2 + t_gap2
+
+        if self.show_eyes:
+            eyes_ctr_y = time_y + th + t_gap + eye_r
+            self._draw_solari_eyes(cr, w / 2, eyes_ctr_y, eye_r)
 
         # Icons at top — ghost matches dimmed tile fg
         n  = self._active_alarm_count()
