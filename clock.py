@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# RESUME: read PENDING.md in this directory before touching anything
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Pango', '1.0')
@@ -1671,12 +1672,13 @@ class ClockWindow(Gtk.Window):
 
         # Solari split-eye state (Split digital style only, HLT #817)
         # 72-card drum: one card per 5°. Mechanism clicks through every intermediate
-        # card to reach the target — short hold per card, long hold at destination.
-        self._sf_step         = 0      # current card 0-71 (× 5° = × π/36)
-        self._sf_flip         = False  # mid-flip visual this frame
-        self._sf_hold         = 0      # hold frames remaining
-        self._sf_last_mouse   = (0, 0) # last seen mouse position
-        self._sf_still_frames = 0      # consecutive frames mouse has been still
+        # card to reach the target — no hold on intermediate cards, long hold at dest.
+        self._sf_step         = 0                        # current card 0-71 (× 5°)
+        self._sf_flip         = False                    # mid-flip visual this frame
+        self._sf_hold         = 0                        # hold frames remaining
+        self._sf_last_mouse   = (0, 0)                   # last seen mouse position
+        self._sf_still_frames = 0                        # consecutive still frames
+        self._sf_idle_cd      = random.randint(60, 180)  # frames until next idle twitch
 
         # Fade state machine (v1.2.0, HLT desktop-clock #330)
         # idle → fading_out (10s) → faded (T min) → fading_in (2 min) → idle
@@ -2015,11 +2017,14 @@ class ClockWindow(Gtk.Window):
         self._append_tracker_menu_items(menu, show_reset=shift)
 
         menu.show_all()
-        # If the pointer grab fails (e.g. browser video player has an active grab),
-        # GTK still shows the menu window but without a grab. Without explicit cleanup,
-        # GTK thinks a menu is active and blocks ALL future menu popups. Handling
-        # grab-broken-event and calling popdown() restores GTK's menu state.
-        menu.connect('grab-broken-event', lambda m, _ev: m.popdown() or False)
+        # If an external grab (e.g. browser video player) breaks our popup grab,
+        # call popdown() so GTK's menu state is cleared and future popups work.
+        # Only act on non-implicit breaks — implicit ones are normal GTK internals.
+        def _on_grab_broken(m, ev):
+            if not ev.implicit:
+                m.popdown()
+            return False
+        menu.connect('grab-broken-event', _on_grab_broken)
         menu.popup_at_pointer(event)
 
     def _toggle_seconds(self, item):
@@ -2492,11 +2497,15 @@ class ClockWindow(Gtk.Window):
             wx, wy = self.get_position()
             cw, ch = self._clock_size()
             raw_angle = math.atan2(my - (wy + ch / 2), mx - (wx + cw / 2))
+            tgt_step = round((raw_angle % (2 * math.pi)) / (2 * math.pi / _N)) % _N
         else:
             self._sf_still_frames = 0
-            raw_angle = self._eye_angle
-
-        tgt_step = round((raw_angle % (2 * math.pi)) / (2 * math.pi / _N)) % _N
+            self._sf_idle_cd -= 1
+            if self._sf_idle_cd <= 0:
+                self._sf_idle_cd = random.randint(60, 180)
+                tgt_step = (self._sf_step + random.choice([-2, -1, 1, 2])) % _N
+            else:
+                tgt_step = self._sf_step
 
         if self._sf_flip:
             # Commit: advance one card toward target
@@ -2506,7 +2515,7 @@ class ClockWindow(Gtk.Window):
             self._sf_flip = False
             # Short hold on intermediate cards; long hold at destination
             at_target = (self._sf_step == tgt_step)
-            self._sf_hold = 6 if at_target else 1
+            self._sf_hold = 6 if at_target else 0
         elif self._sf_hold > 0:
             self._sf_hold -= 1
         else:
@@ -2765,9 +2774,8 @@ class ClockWindow(Gtk.Window):
         tile_r   = max(2.0, eye_th * 0.09)
         sclera_r = eye_th * 0.38
         pupil_r  = sclera_r * 0.36
-        blink    = self._eye_blink
-        in_flip  = self._sf_flip or (0.25 <= blink < 0.75)
-        closed   = blink >= 0.75
+        in_flip  = self._sf_flip
+        closed   = False
 
         for sign in (-1, 1):
             tx = ecx + sign * (eye_tw / 2 + t_gap / 2) - eye_tw / 2
@@ -2784,13 +2792,6 @@ class ClockWindow(Gtk.Window):
                 bar_h = max(1.5, eye_th * 0.16)
                 cr.set_source_rgba(*split_c)
                 cr.rectangle(tx + tile_r, oy - bar_h / 2, eye_tw - tile_r * 2, bar_h)
-                cr.fill()
-            elif closed:
-                # Closed eye: white horizontal dash
-                dash_w = eye_tw * 0.52
-                dash_h = max(1.5, eye_th * 0.10)
-                cr.set_source_rgba(*tile_fg)
-                cr.rectangle(ox - dash_w / 2, oy - dash_h / 2, dash_w, dash_h)
                 cr.fill()
             else:
                 # Open eye: white sclera + dark pupil at full offset for this card
@@ -3950,7 +3951,8 @@ class ClockManager:
         close_item.connect('activate', lambda _: None)
         menu.append(close_item)
         menu.show_all()
-        menu.connect('grab-broken-event', lambda m, _ev: m.popdown() or False)
+        menu.connect('grab-broken-event',
+                     lambda m, ev: m.popdown() or False if not ev.implicit else False)
         menu.popup(None, None, None, None, button, time)
 
     def _show_about(self, _):
@@ -4130,7 +4132,8 @@ class ClockManager:
         menu.append(close_item)
 
         menu.show_all()
-        menu.connect('grab-broken-event', lambda m, _ev: m.popdown() or False)
+        menu.connect('grab-broken-event',
+                     lambda m, ev: m.popdown() or False if not ev.implicit else False)
         menu.popup(None, None, None, None, button, time)
 
     def _set_win_mode(self, item, win, mode):
