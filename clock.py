@@ -2017,15 +2017,8 @@ class ClockWindow(Gtk.Window):
         self._append_tracker_menu_items(menu, show_reset=shift)
 
         menu.show_all()
-        # If an external grab (e.g. browser video player) breaks our popup grab,
-        # call popdown() so GTK's menu state is cleared and future popups work.
-        # Only act on non-implicit breaks — implicit ones are normal GTK internals.
-        def _on_grab_broken(m, ev):
-            if not ev.implicit:
-                m.popdown()
-            return False
-        menu.connect('grab-broken-event', _on_grab_broken)
-        menu.popup_at_pointer(event)
+        x, y = int(event.x_root), int(event.y_root)
+        menu.popup(None, None, lambda m, d: (x, y, True), None, 0, event.time)
 
     def _toggle_seconds(self, item):
         self.show_seconds = item.get_active()
@@ -2314,7 +2307,7 @@ class ClockWindow(Gtk.Window):
     # ── Drawing ───────────────────────────────────────────────────────
 
     def _active_alarm_count(self):
-        return sum(1 for a in load_alarms() if a.get('enabled'))
+        return self.manager._alarm_count
 
     def _draw(self, widget, cr):
         w = widget.get_allocated_width()
@@ -2425,9 +2418,10 @@ class ClockWindow(Gtk.Window):
         if not self.show_eyes:
             self._eye_timer_id = None
             return False
-        self._update_eye_idle()
         if self.digital_style == 'Split':
             self._update_solari_state()
+        else:
+            self._update_eye_idle()
         if self.get_visible() and self.window_mode != 'hidden':
             self.queue_draw()
         return True
@@ -3137,21 +3131,7 @@ class ClockWindow(Gtk.Window):
         self._hg_hit_r    = icon_size * 0.7
 
     def _draw_digital_badge(self, cr, w, h, t):
-        if not self.manager.show_monitor_id: return
-        return  # all digital styles encode monitor ID via colon dot colours instead
-        mid = self.monitor_idx + 1
-        fill_c, text_c = self._id_badge_colors(t['face'])
-        corner_r = 14
-        badge_r = max(5, min(corner_r - 4, int(min(w, h) * 0.07)))
-        bcx = w - 2 - corner_r;  bcy = h - 2 - corner_r
-        cr.arc(bcx, bcy, badge_r, 0, 2 * math.pi)
-        cr.set_source_rgba(*fill_c); cr.fill()
-        layout = PangoCairo.create_layout(cr)
-        layout.set_text(str(mid), -1)
-        layout.set_font_description(Pango.FontDescription(f'DejaVu Sans Bold {max(5, int(badge_r * 0.95))}'))
-        lw, lh = layout.get_pixel_size()
-        cr.move_to(bcx - lw / 2, bcy - lh / 2)
-        cr.set_source_rgba(*text_c); PangoCairo.show_layout(cr, layout)
+        pass  # monitor ID encoded via colon dot colours in all digital styles
 
     def _draw_digital_font(self, cr, w, h, now, t):
         cx = w / 2.0; cy = h / 2.0
@@ -3774,6 +3754,7 @@ class ClockManager:
         # from tray Fade timeout submenu.
         self.fade_wait_minutes = int(shared.get('fade_wait_minutes', FADE_WAIT_DEFAULT_MIN))
         self._fade_tick_id     = None
+        self._alarm_count      = 0
         self.windows          = []
         self._active_alert    = None
         self._alert_windows   = []   # all currently shown alert dialogs
@@ -3951,9 +3932,7 @@ class ClockManager:
         close_item.connect('activate', lambda _: None)
         menu.append(close_item)
         menu.show_all()
-        menu.connect('grab-broken-event',
-                     lambda m, ev: m.popdown() or False if not ev.implicit else False)
-        menu.popup(None, None, None, None, button, time)
+        menu.popup(None, None, None, None, 0, time)
 
     def _show_about(self, _):
         dlg = Gtk.MessageDialog(
@@ -4132,8 +4111,6 @@ class ClockManager:
         menu.append(close_item)
 
         menu.show_all()
-        menu.connect('grab-broken-event',
-                     lambda m, ev: m.popdown() or False if not ev.implicit else False)
         menu.popup(None, None, None, None, button, time)
 
     def _set_win_mode(self, item, win, mode):
@@ -4149,6 +4126,7 @@ class ClockManager:
     def _tick(self):
         self._check_alarms()
         self._check_timers()
+        self._alarm_count = sum(1 for a in load_alarms() if a.get('enabled'))
         for w in self.windows:
             if w.get_visible() and w.window_mode != 'hidden':
                 w.queue_draw()

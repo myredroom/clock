@@ -232,3 +232,105 @@ class TestRtcIsLocal:
     def test_short_adjtime_returns_false(self):
         with patch('builtins.open', mock_open(read_data='only one line\n')):
             assert clock._rtc_is_local() is False
+
+
+# ─── Tracker config ───────────────────────────────────────────────────
+
+class TestTrackerConfig:
+    def test_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'STATE_FILE', str(tmp_path / 'state.json'))
+        cfg = {
+            'tracker_url': 'http://tracker.lan',
+            'tracker_project_key': 'myapp',
+            'tracker_api_key': 'hlt_abc123',
+            'tracker_intro_seen': True,
+            'tracker_disabled': False,
+        }
+        clock.save_tracker_config(cfg)
+        loaded = clock.load_tracker_config()
+        assert loaded['tracker_url'] == 'http://tracker.lan'
+        assert loaded['tracker_project_key'] == 'myapp'
+        assert loaded['tracker_api_key'] == 'hlt_abc123'
+
+    def test_missing_keys_return_empty_string(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'STATE_FILE', str(tmp_path / 'state.json'))
+        loaded = clock.load_tracker_config()
+        assert loaded['tracker_url'] == ''
+        assert loaded['tracker_project_key'] == ''
+        assert loaded['tracker_api_key'] == ''
+
+    def test_configured_false_when_webkit_unavailable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'STATE_FILE', str(tmp_path / 'state.json'))
+        monkeypatch.setattr(clock, '_WEBKIT_AVAILABLE', False)
+        clock.save_tracker_config({
+            'tracker_url': 'http://tracker.lan',
+            'tracker_project_key': 'myapp',
+            'tracker_api_key': 'hlt_abc',
+        })
+        assert clock.tracker_configured() is False
+
+    def test_configured_false_when_url_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'STATE_FILE', str(tmp_path / 'state.json'))
+        monkeypatch.setattr(clock, '_WEBKIT_AVAILABLE', True)
+        clock.save_tracker_config({
+            'tracker_url': '',
+            'tracker_project_key': 'myapp',
+            'tracker_api_key': 'hlt_abc',
+        })
+        assert clock.tracker_configured() is False
+
+    def test_configured_true_when_all_set(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'STATE_FILE', str(tmp_path / 'state.json'))
+        monkeypatch.setattr(clock, '_WEBKIT_AVAILABLE', True)
+        clock.save_tracker_config({
+            'tracker_url': 'http://tracker.lan',
+            'tracker_project_key': 'myapp',
+            'tracker_api_key': 'hlt_abc',
+        })
+        assert clock.tracker_configured() is True
+
+    def test_configured_false_when_key_whitespace_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'STATE_FILE', str(tmp_path / 'state.json'))
+        monkeypatch.setattr(clock, '_WEBKIT_AVAILABLE', True)
+        clock.save_tracker_config({
+            'tracker_url': 'http://tracker.lan',
+            'tracker_project_key': '   ',
+            'tracker_api_key': 'hlt_abc',
+        })
+        assert clock.tracker_configured() is False
+
+
+# ─── save_timers ──────────────────────────────────────────────────────
+
+class TestSaveTimers:
+    def test_only_running_and_paused_are_saved(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'TIMERS_FILE', str(tmp_path / 'timers.json'))
+        timers = [
+            clock.new_timer(label='Running'),
+            dict(clock.new_timer(label='Paused'), state='paused'),
+            dict(clock.new_timer(label='Done'), state='completed'),
+        ]
+        clock.save_timers(timers)
+        with open(tmp_path / 'timers.json') as f:
+            saved = json.load(f)
+        labels = [t['label'] for t in saved]
+        assert 'Running' in labels
+        assert 'Paused' in labels
+        assert 'Done' not in labels
+
+    def test_saved_at_is_added(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(clock, 'TIMERS_FILE', str(tmp_path / 'timers.json'))
+        clock.save_timers([clock.new_timer()])
+        with open(tmp_path / 'timers.json') as f:
+            saved = json.load(f)
+        assert 'saved_at' in saved[0]
+
+
+# ─── _fmt_secs edge cases ─────────────────────────────────────────────
+
+class TestFmtSecsExtra:
+    def test_float_input_truncated(self):
+        assert clock._fmt_secs(90.9) == '01:30'
+
+    def test_large_value(self):
+        assert clock._fmt_secs(86400) == '24:00:00'
