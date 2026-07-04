@@ -3432,14 +3432,22 @@ class ClockWindow(Gtk.Window):
             colon_dots = None
 
         first_colon = True
+        dot_r = max(2.0, tw * 0.13)
         for ch in time_str:
             if ch == ':':
-                dots = colon_dots if first_colon else None
+                # Colons are fixed static indicators on a real Solari board — no tile,
+                # no split line, no chrome. Just two dots in the space between tiles.
+                top_c, bot_c = (colon_dots if first_colon and colon_dots
+                                else (tile_fg, tile_fg))
+                cx = time_x + tw / 2
+                cr.new_path(); cr.set_source_rgba(*top_c)
+                cr.arc(cx, time_y + th * 0.30, dot_r, 0, 2 * math.pi); cr.fill()
+                cr.new_path(); cr.set_source_rgba(*bot_c)
+                cr.arc(cx, time_y + th * 0.70, dot_r, 0, 2 * math.pi); cr.fill()
                 first_colon = False
             else:
-                dots = None
-            self._draw_split_tile(cr, time_x, time_y, tw, th, ch,
-                                  tile_bg, tile_fg, split_c, tile_r, dots)
+                self._draw_split_tile(cr, time_x, time_y, tw, th, ch,
+                                      tile_bg, tile_fg, split_c, tile_r)
             time_x += tw + t_gap
 
         eye_th = th * 0.55 if self.show_eyes else 0.0
