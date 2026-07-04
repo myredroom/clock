@@ -207,7 +207,7 @@ def new_alarm():
         'tone':        3,
         'dismiss':     'persist',
         'expire_mins': 5,
-        'wake':        False,
+        'wake':        True,
         'enabled':     True,
         'last_fired':  None,
     }
