@@ -1417,7 +1417,7 @@ class FadeSliderOverlay(Gtk.Window):
     Sliding adjusts per-cycle fade duration; "Fade now" confirms and starts the cycle."""
     _css_loaded = False
 
-    def __init__(self, clock_win, initial_minutes, on_fade):
+    def __init__(self, clock_win, initial_minutes, on_fade, confirm_label='Fade now'):
         super().__init__(type=Gtk.WindowType.POPUP)
         self._on_fade = on_fade
         screen = self.get_screen()
@@ -1491,7 +1491,7 @@ class FadeSliderOverlay(Gtk.Window):
         cancel.connect('clicked', lambda _: self.destroy())
         btn_row.pack_start(cancel, False, False, 0)
 
-        fade_btn = Gtk.Button(label='Fade now')
+        fade_btn = Gtk.Button(label=confirm_label)
         _css_fb = Gtk.CssProvider()
         _css_fb.load_from_data(b'button { background: #1a6496; color: white; }')
         fade_btn.get_style_context().add_provider(_css_fb, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -1693,6 +1693,8 @@ class ClockWindow(Gtk.Window):
         self._fade_baseline_click_t  = None  # user's click-through state pre-fade
         self._fade_state_start_ms    = 0
         self._fade_wait_min_snapshot = None
+        self.fade_wait_minutes       = int(state.get('fade_wait_minutes', manager.fade_wait_minutes))
+        self._pending_slider_id      = None
 
         self._build_window()
         self.props.opacity = 1.0 if self.theme is THEMES['Clear'] else self.opacity_level
@@ -1813,17 +1815,24 @@ class ClockWindow(Gtk.Window):
         self._hover_overlay.update(self.manager.timers, x, y, w, h, screen_h,
                                    alarms=enabled_alarms)
 
-    def _show_fade_slider(self):
-        def _on_confirm(minutes):
-            self.manager.set_fade_wait_minutes(minutes)
-            self.fade_start()
-        FadeSliderOverlay(self, self.manager.fade_wait_minutes, _on_confirm)
+    def _show_fade_slider_inflight(self):
+        """One-off: adjusts this cycle's wait duration without saving the default."""
+        def _on_adjust(minutes):
+            self._fade_wait_min_snapshot = minutes
+        FadeSliderOverlay(self,
+                          self._fade_wait_min_snapshot or self.fade_wait_minutes,
+                          _on_adjust,
+                          confirm_label='Set duration')
 
     def _on_key_press(self, widget, event):
         pass
 
     def _on_button_press(self, widget, event):
         if event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS and event.button == 1:
+            # Cancel any pending single-click slider before processing double-click.
+            if self._pending_slider_id is not None:
+                GLib.source_remove(self._pending_slider_id)
+                self._pending_slider_id = None
             ex, ey = event.x, event.y
             if hasattr(self, '_bell_draw_pos'):
                 bx, by = self._bell_draw_pos
@@ -1833,16 +1842,24 @@ class ClockWindow(Gtk.Window):
                 hx, hy = self._hg_draw_pos
                 if math.hypot(ex - hx, ey - hy) < self._hg_hit_r:
                     self.manager.open_timer_manager(self); return
-            # v1.2.0 #330 fade-to-clear cycle: double-click on the
-            # clock body (not bell/hourglass) triggers the fade. A
-            # second double-click during fading_out cancels and
-            # restores. During faded/fading_in the clock is click-
-            # through so this handler doesn't fire — the tray menu's
-            # Restore clock handles it instead.
             if self._fade_state == 'fading_out':
                 self.fade_cancel()
             elif self._fade_state == 'idle':
-                self._show_fade_slider()
+                self.fade_start()
+            return
+        # Single-click during fading_out: wait 350 ms (to skip first click of a
+        # double-click) then show a one-off slider to adjust this cycle's duration.
+        if (event.button == 1
+                and event.type == Gdk.EventType.BUTTON_PRESS
+                and self._fade_state == 'fading_out'):
+            if self._pending_slider_id is not None:
+                GLib.source_remove(self._pending_slider_id)
+            def _show_slider():
+                self._pending_slider_id = None
+                if self._fade_state == 'fading_out':
+                    self._show_fade_slider_inflight()
+                return False
+            self._pending_slider_id = GLib.timeout_add(350, _show_slider)
             return
         if event.button == 1 and self.window_mode == 'normal':
             wx, wy = self.get_position()
@@ -3628,7 +3645,7 @@ class ClockWindow(Gtk.Window):
         # Snapshot baselines so we can restore exactly on cancel/end.
         self._fade_baseline_opacity  = self.props.opacity
         self._fade_baseline_click_t  = self.manager.click_through  # user's setting
-        self._fade_wait_min_snapshot = self.manager.fade_wait_minutes
+        self._fade_wait_min_snapshot = self.fade_wait_minutes
         self._fade_state = 'fading_out'
         self._fade_state_start_ms = self._fade_now_ms()
         self.manager._ensure_fade_tick()
@@ -3677,7 +3694,7 @@ class ClockWindow(Gtk.Window):
         # mid-cycle changes don't shorten/lengthen this cycle.
         wait_min = self._fade_wait_min_snapshot
         if wait_min is None:
-            wait_min = self.manager.fade_wait_minutes
+            wait_min = self.fade_wait_minutes
         wait_ms = int(wait_min * 60_000)
 
         if self._fade_state == 'fading_out':
@@ -3730,6 +3747,29 @@ class ClockWindow(Gtk.Window):
         self._fade_baseline_click_t  = None
         self._fade_wait_min_snapshot = None
         return False
+
+    def set_fade_wait_minutes(self, minutes):
+        minutes = max(1, int(minutes))
+        self.fade_wait_minutes = minutes
+        mon_data = load_monitor_state(self.monitor_geom)
+        mon_data['fade_wait_minutes'] = minutes
+        save_monitor_state(self.monitor_geom, mon_data)
+
+    def fade_status_label(self):
+        """Returns a status string while in a fade cycle, None when idle."""
+        if self._fade_state == 'idle':
+            return None
+        if self._fade_state in ('fading_in', 'fast_fading_in'):
+            return 'Fading in…'
+        if self._fade_state == 'fading_out':
+            return 'Fading out…'
+        if self._fade_state == 'faded':
+            snap = self._fade_wait_min_snapshot or self.fade_wait_minutes
+            elapsed = self._fade_now_ms() - self._fade_state_start_ms
+            remaining_s = max(0, int((snap * 60_000 - elapsed) / 1000))
+            m, s = divmod(remaining_s, 60)
+            return f'Away: {m}m {s:02d}s' if m else f'Away: {s}s'
+        return None
 
     def _rounded_rect(self, cr, x, y, w, h, radius):
         cr.new_sub_path()
@@ -3798,10 +3838,12 @@ class ClockManager:
         mon_data = load_monitor_state(geom)
         if self.sync:
             state = shared.copy()
-            # Override with per-monitor position and window_mode
+            # Override with per-monitor position, window_mode, and fade duration
             if 'x' in mon_data: state['x'] = mon_data['x']
             if 'y' in mon_data: state['y'] = mon_data['y']
             state['window_mode'] = mon_data.get('window_mode', 'normal')
+            if 'fade_wait_minutes' in mon_data:
+                state['fade_wait_minutes'] = mon_data['fade_wait_minutes']
         else:
             state = mon_data if mon_data else shared.copy()
         return state
@@ -3949,21 +3991,29 @@ class ClockManager:
         primary_idx = next((i for i in range(display.get_n_monitors())
                             if display.get_monitor(i) == primary_mon), 0)
 
-        # ── Fade-to-clear (v1.2.0 #330) ────────────────────────────
-        # Restore clock — only shown while a fade cycle is active.
-        # Tray is the user's escape hatch when the clock is invisible
-        # or click-through, since they can't right-click the clock.
-        if self.any_window_in_fade_cycle():
-            restore_item = Gtk.MenuItem(label='Restore clock')
-            restore_item.connect('activate', lambda _: self.restore_all_clocks())
-            menu.append(restore_item)
-            menu.append(Gtk.SeparatorMenuItem())
-
-        # Fade duration — how long the clock stays invisible before
-        # fading back. Opens a dialog so any duration can be typed.
-        fade_item = Gtk.MenuItem(label=f'Fade duration: {self.fade_wait_minutes} min…')
-        fade_item.connect('activate', lambda _: self._show_fade_duration_dialog())
-        menu.append(fade_item)
+        # ── Per-monitor fade control ──────────────────────────────
+        # If fading: show remaining time (insensitive — tray is status only).
+        # If idle: preset submenu to set the default for double-click fades.
+        for win in self.windows:
+            mon_label = f'Monitor {win.monitor_idx + 1}'
+            if win.monitor_idx == primary_idx:
+                mon_label += ' (Primary)'
+            status = win.fade_status_label()
+            if status:
+                fade_mi = Gtk.MenuItem(label=f'{mon_label}: {status}')
+                fade_mi.set_sensitive(False)
+            else:
+                fade_mi = Gtk.MenuItem(label=f'{mon_label}: {win.fade_wait_minutes} min')
+                fade_sub = Gtk.Menu()
+                for mins, lbl in [(1, '1 min'), (5, '5 min'), (10, '10 min'),
+                                  (30, '30 min'), (60, '1 hour')]:
+                    ri = Gtk.CheckMenuItem(label=lbl)
+                    ri.set_draw_as_radio(True)
+                    ri.set_active(win.fade_wait_minutes == mins)
+                    ri.connect('activate', lambda _item, w=win, m=mins: w.set_fade_wait_minutes(m))
+                    fade_sub.append(ri)
+                fade_mi.set_submenu(fade_sub)
+            menu.append(fade_mi)
         menu.append(Gtk.SeparatorMenuItem())
 
         # Per-monitor: visibility + snap + options (when click-through active)
@@ -4214,34 +4264,6 @@ class ClockManager:
         shared = load_state()
         shared['fade_wait_minutes'] = minutes
         save_state(shared)
-
-    def _show_fade_duration_dialog(self):
-        dlg = Gtk.Dialog(title='Fade duration')
-        dlg.set_keep_above(True)
-        dlg.add_buttons('Cancel', Gtk.ResponseType.CANCEL, 'OK', Gtk.ResponseType.OK)
-        dlg.set_default_response(Gtk.ResponseType.OK)
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        box.set_margin_top(12); box.set_margin_bottom(12)
-        box.set_margin_start(16); box.set_margin_end(16)
-        label_pre = Gtk.Label(label='Stay invisible for')
-        entry = Gtk.Entry()
-        entry.set_text(str(self.fade_wait_minutes))
-        entry.set_width_chars(5)
-        entry.set_activates_default(True)
-        label_post = Gtk.Label(label='minutes')
-        box.pack_start(label_pre, False, False, 0)
-        box.pack_start(entry, False, False, 0)
-        box.pack_start(label_post, False, False, 0)
-        dlg.get_content_area().add(box)
-        dlg.show_all()
-        resp = dlg.run()
-        text = entry.get_text()
-        dlg.destroy()
-        if resp == Gtk.ResponseType.OK:
-            try:
-                self.set_fade_wait_minutes(max(1, int(text)))
-            except ValueError:
-                pass
 
     def _on_alert_hide(self, dlg):
         if dlg in self._alert_windows:
