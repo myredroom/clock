@@ -360,27 +360,31 @@ class TestMonitorMenuLabel:
         assert clock.ClockManager._monitor_menu_label(w, 0) == 'Monitor 2 — Fading out…'
 
 
-# ─── resize anchoring: stays within the given monitor's rect (bug #846) ──
+# ─── resize anchoring (Brendan's spec): grow about centre, pin relevant edge ──
 class TestAnchorWithin:
     A = staticmethod(clock.ClockWindow._anchor_within)
 
-    def test_centred_keeps_centre(self):
-        # equidistant from left/right and top/bottom -> grow about the centre
+    def test_middle_clock_grows_about_its_centre(self):
+        # comfortably central -> symmetric growth, centre unchanged (no lurch)
         nx, ny = self.A((0, 0, 1000, 1000), 450, 450, 100, 100, 200, 200)
-        assert (nx, ny) == (400, 400)          # centre stays at 500,500
+        assert (nx, ny) == (400, 400)          # centre still 500,500
 
-    def test_near_left_keeps_left_edge(self):
-        nx, ny = self.A((0, 0, 1000, 1000), 10, 10, 100, 100, 300, 300)
-        assert (nx, ny) == (10, 10)
+    def test_near_left_pins_to_left_notional_edge(self):
+        nx, _ = self.A((0, 0, 1000, 1000), 10, 10, 100, 100, 300, 300)
+        assert nx == 0                          # left edge hangs off the notional edge
 
-    def test_near_right_keeps_right_edge(self):
+    def test_near_right_pins_to_right_notional_edge(self):
         nx, _ = self.A((0, 0, 1000, 1000), 890, 500, 100, 100, 300, 100)
-        assert nx + 300 == 990                 # right edge unchanged
+        assert nx + 300 == 1000                 # right edge hangs off the notional edge
+
+    def test_near_top_pins_to_top_never_off_screen(self):
+        # a clock near the top grown tall must pin its top edge, not go negative
+        _, ny = self.A((0, 0, 1000, 1000), 400, 10, 100, 100, 200, 400)
+        assert ny == 0
 
     def test_oversized_clock_pins_inside_its_own_monitor(self):
-        # Monitor 2 sits to the RIGHT (rect starts at x=1920). A clock grown
-        # WIDER than the monitor must pin to that monitor's left edge, never
-        # cross back onto monitor 1 (the #846 hop).
+        # Monitor 2 to the RIGHT (rect starts at x=1920). A clock grown wider than
+        # the monitor pins to that monitor's left edge — never crosses to monitor 1.
         rect = (1920, 0, 3840, 1080)
         nx, _ = self.A(rect, 3500, 100, 200, 200, 2200, 900)
-        assert nx == 1920                      # stays on monitor 2, not < 1920
+        assert nx == 1920

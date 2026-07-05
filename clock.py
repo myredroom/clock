@@ -2296,25 +2296,22 @@ class ClockWindow(Gtk.Window):
 
     @staticmethod
     def _anchor_within(rect, wx, wy, old_cw, old_ch, new_cw, new_ch):
-        """Pure geometry: new (x, y) for a resized window, anchoring to the nearer
-        edge of `rect` (l, t, r, b) per axis, then clamping inside the rect.
+        """New (x, y) for a resized window, per Brendan's spec.
 
-        For each axis independently: closer to the left/top edge keeps that edge
-        fixed; closer to right/bottom keeps that edge fixed; exactly equidistant
-        keeps the centre. Final clamp keeps the window inside the rect even when the
-        new size exceeds it (an oversized clock pins to the left/top edge)."""
+        Grow about the clock's current CENTRE; then per axis, if that centre sits
+        within new_size/2 of a notional edge of `rect` (l, t, r, b) — i.e. the new
+        size would spill that side past the monitor boundary — pin that side to the
+        notional edge instead. A clock in the middle grows symmetrically; only a
+        clock near an edge hangs off it. The clamp works out which edges apply.
+        (`rect` is already ~1cm inbound of the physical edge — the notional edge.)"""
         l, t, r, b = rect
-        left_dist  = wx - l
-        right_dist = r  - (wx + old_cw)
-        top_dist   = wy - t
-        bot_dist   = b  - (wy + old_ch)
-        if   left_dist  < right_dist: nx = wx
-        elif right_dist < left_dist:  nx = wx + old_cw - new_cw
-        else:                         nx = wx + old_cw // 2 - new_cw // 2
-        if   top_dist   < bot_dist:   ny = wy
-        elif bot_dist   < top_dist:   ny = wy + old_ch - new_ch
-        else:                         ny = wy + old_ch // 2 - new_ch // 2
-        return max(l, min(nx, r - new_cw)), max(t, min(ny, b - new_ch))
+        cx = wx + old_cw / 2.0          # grow about the current centre
+        cy = wy + old_ch / 2.0
+        nx = int(round(cx - new_cw / 2.0))
+        ny = int(round(cy - new_ch / 2.0))
+        nx = max(l, min(nx, r - new_cw))   # pin the side(s) that would cross the notional edge
+        ny = max(t, min(ny, b - new_ch))
+        return nx, ny
 
     def _edge_anchored_pos(self, wx, wy, old_cw, old_ch, new_cw, new_ch, mon=None):
         """Anchor a resized window to the nearer constraint edge, on the monitor it
