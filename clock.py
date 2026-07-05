@@ -2069,10 +2069,11 @@ class ClockWindow(Gtk.Window):
         if not item.get_active(): return
         old_cw, old_ch = self._clock_size()
         wx, wy = self.get_position()
+        mon = self._current_monitor()   # before the grow (bug #846)
         self.mode = name
         self._apply_window_size()
         new_cw, new_ch = self._clock_size()
-        nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+        nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch, mon)
         self.move(nx, ny)
         self._saved_pos = (nx, ny)
         self._save_all(nx, ny); self.queue_draw()
@@ -2081,11 +2082,12 @@ class ClockWindow(Gtk.Window):
         if not item.get_active(): return
         old_cw, old_ch = self._clock_size()
         wx, wy = self.get_position()
+        mon = self._current_monitor()   # before the grow (bug #846)
         self.digital_style = style
         if self.mode == 'Digital':
             self._apply_window_size()
             new_cw, new_ch = self._clock_size()
-            nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+            nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch, mon)
             self.move(nx, ny); self._saved_pos = (nx, ny)
         self._save_all(); self.queue_draw()
 
@@ -2093,11 +2095,12 @@ class ClockWindow(Gtk.Window):
         if not item.get_active(): return
         old_cw, old_ch = self._clock_size()
         wx, wy = self.get_position()
+        mon = self._current_monitor()   # before the grow (bug #846)
         self.digital_font = font
         if self.mode == 'Digital' and self.digital_style == 'Font':
             self._apply_window_size()
             new_cw, new_ch = self._clock_size()
-            nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+            nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch, mon)
             self.move(nx, ny); self._saved_pos = (nx, ny)
         self._save_all(); self.queue_draw()
 
@@ -2105,17 +2108,18 @@ class ClockWindow(Gtk.Window):
         if not item.get_active(): return
         old_cw, old_ch = self._clock_size()
         wx, wy = self.get_position()
+        mon = self._current_monitor()   # capture BEFORE the grow (old size → correct monitor, bug #846)
         self.size = px
         self._resizing = True
         self._apply_window_size()
         new_cw, new_ch = self._clock_size()
-        nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch)
+        nx, ny = self._edge_anchored_pos(wx, wy, old_cw, old_ch, new_cw, new_ch, mon)
         self.move(nx, ny)
-        GLib.idle_add(self._finish_resize, nx, ny)
+        GLib.idle_add(self._finish_resize, nx, ny, mon)
 
-    def _finish_resize(self, nx, ny):
+    def _finish_resize(self, nx, ny, mon=None):
         self.move(nx, ny)
-        self._sync_monitor_geom()
+        self._sync_monitor_geom(mon)
         self.apply_click_through(self.manager.click_through)
         self._resizing = False
         self._saved_pos = (nx, ny)
@@ -2252,22 +2256,24 @@ class ClockWindow(Gtk.Window):
                 best, best_dist = m, d
         return best
 
-    def _sync_monitor_geom(self):
+    def _sync_monitor_geom(self, mon=None):
         """Update monitor_geom and monitor_idx to match where the window actually is.
         Called on configure events and on monitors-changed so eyes tracking and
-        constraint rects are always correct."""
+        constraint rects are always correct. During a resize the caller passes the
+        pre-resize monitor (bug #846) so identity doesn't flip to an adjacent screen."""
         display = Gdk.Display.get_default()
-        mon     = self._current_monitor()
+        mon     = mon or self._current_monitor()
         self.monitor_geom = mon.get_geometry()
         for i in range(display.get_n_monitors()):
             if display.get_monitor(i) == mon:
                 self.monitor_idx = i
                 break
 
-    def _constraint_rect(self):
-        """Return (left, top, right, bottom) of the draggable area for this monitor."""
+    def _constraint_rect(self, mon=None):
+        """Return (left, top, right, bottom) of the draggable area for this monitor.
+        Pass `mon` to pin the rect to a specific monitor (used during resize)."""
         try:
-            mon = self._current_monitor()
+            mon = mon or self._current_monitor()
             wa  = mon.get_workarea()
             px_per_mm = mon.get_geometry().width / max(mon.get_width_mm(), 1)
             gap = max(8, round(5 * px_per_mm))
@@ -2288,15 +2294,16 @@ class ClockWindow(Gtk.Window):
         self.resize(cw, ch)
         return False   # safe to use as GLib.idle_add callback
 
-    def _edge_anchored_pos(self, wx, wy, old_cw, old_ch, new_cw, new_ch):
-        """Return new (x, y) for a resized window, anchoring to the nearer constraint edge.
+    @staticmethod
+    def _anchor_within(rect, wx, wy, old_cw, old_ch, new_cw, new_ch):
+        """Pure geometry: new (x, y) for a resized window, anchoring to the nearer
+        edge of `rect` (l, t, r, b) per axis, then clamping inside the rect.
 
-        For each axis independently: if the clock is closer to the left/top boundary,
-        keep that edge fixed; if closer to right/bottom, keep that edge fixed; if
-        exactly equidistant (genuinely centred), keep the centre.  No arbitrary
-        percentage threshold — works correctly for any clock size on any monitor.
-        """
-        l, t, r, b = self._constraint_rect()
+        For each axis independently: closer to the left/top edge keeps that edge
+        fixed; closer to right/bottom keeps that edge fixed; exactly equidistant
+        keeps the centre. Final clamp keeps the window inside the rect even when the
+        new size exceeds it (an oversized clock pins to the left/top edge)."""
+        l, t, r, b = rect
         left_dist  = wx - l
         right_dist = r  - (wx + old_cw)
         top_dist   = wy - t
@@ -2308,6 +2315,13 @@ class ClockWindow(Gtk.Window):
         elif bot_dist   < top_dist:   ny = wy + old_ch - new_ch
         else:                         ny = wy + old_ch // 2 - new_ch // 2
         return max(l, min(nx, r - new_cw)), max(t, min(ny, b - new_ch))
+
+    def _edge_anchored_pos(self, wx, wy, old_cw, old_ch, new_cw, new_ch, mon=None):
+        """Anchor a resized window to the nearer constraint edge, on the monitor it
+        STARTED on (mon) — not one re-detected after the in-place grow, whose centre
+        could spill onto an adjacent monitor and hop the clock across (bug #846)."""
+        return self._anchor_within(self._constraint_rect(mon),
+                                   wx, wy, old_cw, old_ch, new_cw, new_ch)
 
     def _snap(self, item, pos):
         l, t, r, b = self._constraint_rect()
