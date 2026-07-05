@@ -6,6 +6,7 @@ the whole module is guarded by the requires_display mark from conftest.
 """
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import mock_open, patch
 
 import pytest
@@ -334,3 +335,26 @@ class TestFmtSecsExtra:
 
     def test_large_value(self):
         assert clock._fmt_secs(86400) == '24:00:00'
+
+
+# ─── tray menu: per-monitor label (v1.5.0 merged Hide/Fade/Snap) ──────
+class TestMonitorMenuLabel:
+    @staticmethod
+    def _win(idx, status):
+        return SimpleNamespace(monitor_idx=idx, fade_status_label=lambda: status)
+
+    def test_primary_idle(self):
+        w = self._win(0, None)
+        assert clock.ClockManager._monitor_menu_label(w, 0) == 'Monitor 1 (Primary)'
+
+    def test_secondary_idle(self):
+        w = self._win(1, None)
+        assert clock.ClockManager._monitor_menu_label(w, 0) == 'Monitor 2'
+
+    def test_fade_status_rides_on_label(self):
+        w = self._win(0, 'Away 3m 20s')
+        assert clock.ClockManager._monitor_menu_label(w, 0) == 'Monitor 1 (Primary) — Away 3m 20s'
+
+    def test_secondary_fading(self):
+        w = self._win(1, 'Fading out…')
+        assert clock.ClockManager._monitor_menu_label(w, 0) == 'Monitor 2 — Fading out…'

@@ -3984,6 +3984,17 @@ class ClockManager:
         dlg.format_secondary_text('Desktop clock for Linux\nPython + GTK3')
         dlg.run(); dlg.destroy()
 
+    @staticmethod
+    def _monitor_menu_label(win, primary_idx):
+        """Parent label for a monitor's tray submenu; carries live fade status."""
+        label = f'Monitor {win.monitor_idx + 1}'
+        if win.monitor_idx == primary_idx:
+            label += ' (Primary)'
+        status = win.fade_status_label()
+        if status:
+            label += f' — {status}'
+        return label
+
     def _show_main_menu(self, button, time):
         menu = Gtk.Menu()
         display     = Gdk.Display.get_default()
@@ -3991,20 +4002,26 @@ class ClockManager:
         primary_idx = next((i for i in range(display.get_n_monitors())
                             if display.get_monitor(i) == primary_mon), 0)
 
-        # ── Per-monitor fade control ──────────────────────────────
-        # If fading: show remaining time (insensitive — tray is status only).
-        # If idle: preset submenu to set the default for double-click fades.
+        # ── Per-monitor controls: Hide · Fade · Snap (+ display when click-through) ──
+        # One submenu per monitor; live fade status rides on the parent label.
         for win in self.windows:
-            mon_label = f'Monitor {win.monitor_idx + 1}'
-            if win.monitor_idx == primary_idx:
-                mon_label += ' (Primary)'
-            status = win.fade_status_label()
-            if status:
-                fade_mi = Gtk.MenuItem(label=f'{mon_label}: {status}')
-                fade_mi.set_sensitive(False)
+            mon_item = Gtk.MenuItem(label=self._monitor_menu_label(win, primary_idx))
+            sub = Gtk.Menu()
+
+            hide_mi = Gtk.CheckMenuItem(label='Hide clock')
+            hide_mi.set_active(win.window_mode == 'hidden')
+            hide_mi.connect('activate', lambda i, w=win: w.set_window_mode('hidden' if i.get_active() else 'normal'))
+            sub.append(hide_mi)
+
+            # Fade: idle → auto-fade duration presets (this monitor's default for
+            # double-click fades). Fading → offer Cancel fade.
+            if win.fade_status_label():
+                cancel_mi = Gtk.MenuItem(label='Cancel fade')
+                cancel_mi.connect('activate', lambda _, w=win: w.fade_cancel())
+                sub.append(cancel_mi)
             else:
-                fade_mi = Gtk.MenuItem(label=f'{mon_label}: {win.fade_wait_minutes} min')
-                fade_sub = Gtk.Menu()
+                fade_item = Gtk.MenuItem(label='Auto-fade after')
+                fade_sub  = Gtk.Menu()
                 for mins, lbl in [(1, '1 min'), (5, '5 min'), (10, '10 min'),
                                   (30, '30 min'), (60, '1 hour')]:
                     ri = Gtk.CheckMenuItem(label=lbl)
@@ -4012,21 +4029,9 @@ class ClockManager:
                     ri.set_active(win.fade_wait_minutes == mins)
                     ri.connect('activate', lambda _item, w=win, m=mins: w.set_fade_wait_minutes(m))
                     fade_sub.append(ri)
-                fade_mi.set_submenu(fade_sub)
-            menu.append(fade_mi)
-        menu.append(Gtk.SeparatorMenuItem())
+                fade_item.set_submenu(fade_sub)
+                sub.append(fade_item)
 
-        # Per-monitor: visibility + snap + options (when click-through active)
-        for win in self.windows:
-            label = f'Monitor {win.monitor_idx + 1}'
-            if win.monitor_idx == primary_idx:
-                label += ' (Primary)'
-            mon_item = Gtk.MenuItem(label=label)
-            sub = Gtk.Menu()
-            hide_mi = Gtk.CheckMenuItem(label='Hide clock')
-            hide_mi.set_active(win.window_mode == 'hidden')
-            hide_mi.connect('activate', lambda i, w=win: w.set_window_mode('hidden' if i.get_active() else 'normal'))
-            sub.append(hide_mi)
             sub.append(Gtk.SeparatorMenuItem())
             snap_item = Gtk.MenuItem(label='Snap to corner')
             snap_sub  = Gtk.Menu()
